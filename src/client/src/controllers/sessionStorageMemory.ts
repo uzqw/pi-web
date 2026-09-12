@@ -19,6 +19,14 @@ export function browserSessionStorage(): KeyValueStorage | undefined {
   }
 }
 
+export function browserLocalStorage(): KeyValueStorage | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 export class PersistentValueMap<T> {
   private readonly values = new Map<string, T>();
 

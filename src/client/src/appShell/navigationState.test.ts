@@ -60,7 +60,7 @@ describe("navigationState", () => {
   });
 
   it("advances to the next mobile section after a selection", () => {
-    expect(nextNavigationSection("projects")).toBe("workspaces");
+    expect(nextNavigationSection("projects")).toBe("sessions");
     expect(nextNavigationSection("workspaces")).toBe("sessions");
     expect(nextNavigationSection("sessions")).toBeUndefined();
     expect(expandNavigationSection("none", "projects", true)).toBe("projects");
@@ -146,8 +146,9 @@ describe("navigation section tab persistence", () => {
   it("advances the mobile accordion through the sections a selection flows into", () => {
     const controller = new NavigationSectionsController(fakeHost(), () => selection, () => true, { storage: new FakeStorage() });
 
+    // A project pick goes straight to sessions: the workspace comes from memory.
     controller.advanceAfterSelection("projects");
-    expect(controller.isCollapsed("workspaces")).toBe(false);
+    expect(controller.isCollapsed("sessions")).toBe(false);
     controller.advanceAfterSelection("workspaces");
     expect(controller.isCollapsed("sessions")).toBe(false);
     // Sessions is the last section: nothing left to advance into.

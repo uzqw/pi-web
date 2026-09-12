@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "../api";
 import type { KeyValueStorage } from "./sessionStorageMemory";
-import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, SessionStorageWorkspaceSelectionMemory } from "./workspaceSelection";
+import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, LocalStorageWorkspaceSelectionMemory } from "./workspaceSelection";
 
 describe("selectPreferredWorkspace", () => {
   it("prefers an explicit target workspace", () => {
@@ -46,23 +46,23 @@ describe("InMemoryWorkspaceSelectionMemory", () => {
   });
 });
 
-describe("SessionStorageWorkspaceSelectionMemory", () => {
+describe("LocalStorageWorkspaceSelectionMemory", () => {
   it("persists the latest selected workspace per project", () => {
     const storage = memoryStorage();
-    const memory = new SessionStorageWorkspaceSelectionMemory(storage);
+    const memory = new LocalStorageWorkspaceSelectionMemory(storage);
 
     memory.rememberWorkspace({ ...testWorkspace("feature"), projectId: "local:p1" });
     memory.rememberWorkspace({ ...testWorkspace("other"), projectId: "remote:p1" });
 
-    const restored = new SessionStorageWorkspaceSelectionMemory(storage);
+    const restored = new LocalStorageWorkspaceSelectionMemory(storage);
 
     expect(restored.latestWorkspaceId("local:p1")).toBe("feature");
     expect(restored.latestWorkspaceId("remote:p1")).toBe("other");
 
     restored.forgetProject("local:p1");
 
-    expect(new SessionStorageWorkspaceSelectionMemory(storage).latestWorkspaceId("local:p1")).toBeUndefined();
-    expect(new SessionStorageWorkspaceSelectionMemory(storage).latestWorkspaceId("remote:p1")).toBe("other");
+    expect(new LocalStorageWorkspaceSelectionMemory(storage).latestWorkspaceId("local:p1")).toBeUndefined();
+    expect(new LocalStorageWorkspaceSelectionMemory(storage).latestWorkspaceId("remote:p1")).toBe("other");
   });
 });
 

@@ -219,7 +219,7 @@ describe("ChatView notification tray wiring", () => {
     expect(headerFocus).not.toHaveBeenCalled();
   });
 
-  it("keeps a collapsed tray closed for new arrivals and isolates matching session ids by exact chat", () => {
+  it("keeps other chats collapsed after an explicit expand, isolating by exact chat identity", () => {
     const view = withNotificationInbox(new ChatView());
     const inbox = requireNotificationInbox(view);
     const rendered = renderNotificationTray(view);
@@ -227,8 +227,8 @@ describe("ChatView notification tray wiring", () => {
 
     templateEventHandlerAfterMarker(rendered, "notification-toggle")(new Event("click"));
 
-    const collapsedTargetKeys: unknown = Reflect.get(view, "collapsedNotificationTargetKeys");
-    if (!(collapsedTargetKeys instanceof Set)) throw new Error("Expected collapsed notification target keys");
+    const expandedTargetKeys: unknown = Reflect.get(view, "expandedNotificationTargetKeys");
+    if (!(expandedTargetKeys instanceof Set)) throw new Error("Expected expanded notification target keys");
     const firstNotification = inbox.notifications[0];
     if (firstNotification === undefined) throw new Error("expected a retained notification");
     const newArrival = {
@@ -236,10 +236,11 @@ describe("ChatView notification tray wiring", () => {
       notifications: [{ ...firstNotification, id: "daemon-a:2", order: 2 }, ...inbox.notifications],
       retainedCount: 2,
     };
-    expect(notificationTrayIsCollapsed(collapsedTargetKeys, newArrival)).toBe(true);
-    expect(notificationTrayIsCollapsed(collapsedTargetKeys, { ...newArrival, cwd: "/other" })).toBe(false);
-    expect(notificationTrayIsCollapsed(collapsedTargetKeys, { ...newArrival, machineId: "remote" })).toBe(false);
-    expect(collapsedTargetKeys.has(notificationTargetKey(inbox))).toBe(true);
+    // An explicit toggle expands this exact chat; every other chat stays collapsed.
+    expect(notificationTrayIsCollapsed(expandedTargetKeys, newArrival)).toBe(false);
+    expect(notificationTrayIsCollapsed(expandedTargetKeys, { ...newArrival, cwd: "/other" })).toBe(true);
+    expect(notificationTrayIsCollapsed(expandedTargetKeys, { ...newArrival, machineId: "remote" })).toBe(true);
+    expect(expandedTargetKeys.has(notificationTargetKey(inbox))).toBe(true);
   });
 });
 

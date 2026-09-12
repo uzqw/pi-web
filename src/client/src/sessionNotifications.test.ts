@@ -17,11 +17,14 @@ import {
   notificationTargetKey,
   notificationTrayHeading,
   notificationTrayIsCollapsed,
+  readNotificationTrayExpandedKeys,
   selectedNotificationView,
-  setNotificationTrayCollapsed,
+  setNotificationTrayExpanded,
+  writeNotificationTrayExpandedKeys,
   type SessionNotificationAnnouncement,
   type SessionNotificationTarget,
 } from "./sessionNotifications";
+import type { KeyValueStorage } from "./controllers/sessionStorageMemory";
 
 const target: SessionNotificationTarget = { machineId: "local", sessionId: "session-1", cwd: "/repo" };
 
@@ -159,15 +162,34 @@ describe("notification presentation helpers", () => {
     expect(notificationFocusTargetAfterDismiss([notification(1)], "daemon-a:1")).toEqual({ kind: "header" });
   });
 
-  it("retains collapse state by exact machine, cwd, and session identity", () => {
-    const collapsed = setNotificationTrayCollapsed(new Set(), target, true);
+  it("collapses by default and tracks the expanded set by exact machine, cwd, and session identity", () => {
+    // Nothing expanded: every tray starts collapsed.
+    expect(notificationTrayIsCollapsed(new Set(), target)).toBe(true);
 
-    expect(notificationTrayIsCollapsed(collapsed, target)).toBe(true);
-    expect(notificationTrayIsCollapsed(collapsed, { ...target, machineId: "remote" })).toBe(false);
-    expect(notificationTrayIsCollapsed(collapsed, { ...target, cwd: "/other" })).toBe(false);
-    expect(notificationTrayIsCollapsed(collapsed, { ...target, sessionId: "session-2" })).toBe(false);
+    const expanded = setNotificationTrayExpanded(new Set(), target, true);
+    expect(notificationTrayIsCollapsed(expanded, target)).toBe(false);
+    expect(notificationTrayIsCollapsed(expanded, { ...target, machineId: "remote" })).toBe(true);
+    expect(notificationTrayIsCollapsed(expanded, { ...target, cwd: "/other" })).toBe(true);
+    expect(notificationTrayIsCollapsed(expanded, { ...target, sessionId: "session-2" })).toBe(true);
     expect(notificationTargetKey(target)).not.toBe(notificationTargetKey({ ...target, cwd: "/repo|session-1" }));
-    expect(notificationTrayIsCollapsed(setNotificationTrayCollapsed(collapsed, target, false), target)).toBe(false);
+    expect(notificationTrayIsCollapsed(setNotificationTrayExpanded(expanded, target, false), target)).toBe(true);
+  });
+
+  it("persists and restores the expanded tray keys in localStorage", () => {
+    const store = new Map<string, string>();
+    const fakeStorage: KeyValueStorage = {
+      getItem: (key) => store.get(key) ?? null,
+      setItem: (key, value) => { store.set(key, value); },
+      removeItem: (key) => { store.delete(key); },
+    };
+
+    writeNotificationTrayExpandedKeys(setNotificationTrayExpanded(new Set(), target, true), fakeStorage);
+    const restored = readNotificationTrayExpandedKeys(fakeStorage);
+    expect(notificationTrayIsCollapsed(restored, target)).toBe(false);
+    expect(notificationTrayIsCollapsed(restored, { ...target, cwd: "/other" })).toBe(true);
+
+    writeNotificationTrayExpandedKeys(new Set(), fakeStorage);
+    expect(readNotificationTrayExpandedKeys(fakeStorage).size).toBe(0);
   });
 
   it("derives compact tray copy and a count that includes older unseen notifications", () => {

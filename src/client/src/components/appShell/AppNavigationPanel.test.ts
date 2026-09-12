@@ -80,7 +80,7 @@ describe("machine status wiring", () => {
 });
 
 describe("navigationActivityItems", () => {
-  it("lists lit projects at project granularity and the selected project's lit workspaces at workspace granularity", () => {
+  it("lists every lit project at project granularity, never expanding workspaces", () => {
     const snapshot = machineStatusSnapshot({
       projects: { "project-1": { "core:working": true }, "project-2": { "core:unread": true } },
       workspaces: { "ws-1": { "core:unread": true }, "ws-2": {} },
@@ -90,15 +90,13 @@ describe("navigationActivityItems", () => {
       machineId: "local",
       snapshot,
       projects: [project("project-1"), project("project-2")],
-      selectedProject: project("project-1"),
-      workspaces: [workspace("ws-1", "project-1"), workspace("ws-2", "project-1")],
     })).toEqual([
-      { kind: "workspace", machineId: "local", projectId: "project-1", workspaceId: "ws-1" },
-      { kind: "project", machineId: "local", projectId: "project-2" },
+      { machineId: "local", projectId: "project-1" },
+      { machineId: "local", projectId: "project-2" },
     ]);
   });
 
-  it("ignores lit nodes the sidebar does not load: unknown projects and unlit workspaces", () => {
+  it("ignores lit snapshots without a listed project: unknown projects never surface", () => {
     const snapshot = machineStatusSnapshot({
       projects: { ghost: { "core:working": true } },
       workspaces: { "ws-2": { "core:working": true } },
@@ -108,29 +106,23 @@ describe("navigationActivityItems", () => {
       machineId: "local",
       snapshot,
       projects: [project("project-1")],
-      selectedProject: project("project-1"),
-      workspaces: [workspace("ws-1", "project-1"), workspace("ws-2", "project-1")],
-    })).toEqual([
-      { kind: "workspace", machineId: "local", projectId: "project-1", workspaceId: "ws-2" },
-    ]);
+    })).toEqual([]);
   });
 
-  it("falls back to project granularity for every project when none is selected", () => {
+  it("lists lit projects regardless of whether one is selected", () => {
     const snapshot = machineStatusSnapshot({ projects: { "project-1": { "core:working": true } } });
 
     expect(navigationActivityItems({
       machineId: "local",
       snapshot,
       projects: [project("project-1")],
-      selectedProject: undefined,
-      workspaces: [],
     })).toEqual([
-      { kind: "project", machineId: "local", projectId: "project-1" },
+      { machineId: "local", projectId: "project-1" },
     ]);
   });
 
   it("returns nothing without a snapshot", () => {
-    expect(navigationActivityItems({ machineId: "local", snapshot: undefined, projects: [], selectedProject: undefined, workspaces: [] })).toEqual([]);
+    expect(navigationActivityItems({ machineId: "local", snapshot: undefined, projects: [] })).toEqual([]);
   });
 });
 
@@ -216,7 +208,7 @@ describe("desktop tab row", () => {
 });
 
 describe("desktop activity row", () => {
-  it("lists the selected project's lit workspaces and every other lit project", async () => {
+  it("lists every lit project by its project name", async () => {
     const snapshot = machineStatusSnapshot({
       projects: { "project-1": { "core:working": true }, "project-2": { "core:unread": true } },
       workspaces: { "ws-1": { "core:unread": true }, "ws-2": {} },
@@ -227,20 +219,20 @@ describe("desktop activity row", () => {
     });
     const chips = panel.shadowRoot ? [...panel.shadowRoot.querySelectorAll(".activity-chip")] : [];
 
-    expect(chips.map((chip) => chip.querySelector(".activity-chip-name")?.textContent)).toEqual(["ws-1", "project-2"]);
+    expect(chips.map((chip) => chip.querySelector(".activity-chip-name")?.textContent)).toEqual(["project-1", "project-2"]);
   });
 
-  it("reports a clicked workspace chip for jumping", async () => {
-    const snapshot = machineStatusSnapshot({ workspaces: { "ws-1": { "core:unread": true } } });
+  it("reports a clicked project chip for jumping", async () => {
+    const snapshot = machineStatusSnapshot({ projects: { "project-1": { "core:unread": true } } });
     const onJumpToActivity = vi.fn();
     const panel = await mountTabbedPanel((candidate) => {
       candidate.machineStatusSnapshots = { local: snapshot };
       candidate.onJumpToActivity = onJumpToActivity;
     });
 
-    activityChip(panel, "ws-1").click();
+    activityChip(panel, "project-1").click();
 
-    expect(onJumpToActivity).toHaveBeenCalledWith({ kind: "workspace", machineId: "local", projectId: "project-1", workspaceId: "ws-1" });
+    expect(onJumpToActivity).toHaveBeenCalledWith({ machineId: "local", projectId: "project-1" });
   });
 
   it("renders no activity row when nothing is lit", async () => {

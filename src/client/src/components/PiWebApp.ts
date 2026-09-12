@@ -1379,11 +1379,11 @@ export class PiWebApp extends LitElement {
   }
 
   /**
-   * Jump from the desktop activity row to the lit project or workspace: opens
-   * the Sessions tab, selects the target, then opens the active/unread session
-   * its listing holds. Items always belong to the selected machine — the row
-   * is drawn from that machine's snapshot — so a machine switch between render
-   * and click drops the jump instead of crossing machines.
+   * Jump from the desktop activity row to a lit project: opens the Sessions
+   * tab, selects the project, then opens the active/unread session its listing
+   * holds. Items always belong to the selected machine — the row is drawn from
+   * that machine's snapshot — so a machine switch between render and click
+   * drops the jump instead of crossing machines.
    */
   private async jumpToActivity(item: NavigationActivityItem): Promise<void> {
     if (item.machineId !== selectedMachineId(this.state)) return;
@@ -1391,16 +1391,8 @@ export class PiWebApp extends LitElement {
     if (project === undefined) return;
     this.navigationSections.expand("sessions");
     await this.selectNavigationItem("sessions", "chat", async () => {
-      if (item.kind === "workspace") await this.jumpToWorkspace(item, project);
-      else await this.jumpToProject(item, project);
+      await this.jumpToProject(item, project);
     });
-  }
-
-  private async jumpToWorkspace(item: NavigationActivityItem, project: Project): Promise<void> {
-    const workspace = this.state.workspaces.find((candidate) => candidate.id === item.workspaceId && candidate.projectId === project.id);
-    if (workspace === undefined) return;
-    await this.workspaces.selectWorkspace(workspace);
-    await this.selectLitSession();
   }
 
   private async jumpToProject(item: NavigationActivityItem, project: Project): Promise<void> {

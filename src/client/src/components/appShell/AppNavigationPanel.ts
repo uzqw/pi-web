@@ -19,23 +19,18 @@ import "../SessionList";
 export type NavigationFocusTarget = NavigationSection | "chat";
 
 /**
- * One clickable entry in the desktop activity row: a lit project at project
- * granularity, or a lit workspace of the selected project at workspace
- * granularity. Every item resolves against the currently selected machine.
+ * One clickable project in the desktop activity row. The row lists lit
+ * projects only, resolved against the currently selected machine.
  */
 export interface NavigationActivityItem {
-  readonly kind: "project" | "workspace";
   readonly machineId: string;
   readonly projectId: string;
-  readonly workspaceId?: string;
 }
 
 export interface NavigationActivityOptions {
   machineId: string;
   snapshot: MachineStatusSnapshot | undefined;
   projects: readonly Project[];
-  selectedProject: Project | undefined;
-  workspaces: readonly Workspace[];
 }
 
 /** The dot a desktop tab shows for one section. */
@@ -66,24 +61,17 @@ export function isNavigationActivityLit(flags: StatusFlags | undefined): boolean
 }
 
 /**
- * The clickable activity row: lit workspaces of the selected project at
- * workspace granularity (the sidebar only loads those worktrees), every other
- * lit project at project granularity. Drawn from the same selected-machine
- * snapshot the lists render, so every item is jumpable.
+ * The clickable activity row: every lit project, named by its project, drawn
+ * from the same selected-machine snapshot the lists render, so every item is
+ * jumpable.
  */
 export function navigationActivityItems(options: NavigationActivityOptions): NavigationActivityItem[] {
-  const { machineId, snapshot, projects, selectedProject, workspaces } = options;
+  const { machineId, snapshot, projects } = options;
   if (snapshot === undefined) return [];
   const items: NavigationActivityItem[] = [];
   for (const project of projects) {
-    if (project.id === selectedProject?.id) {
-      for (const workspace of workspaces) {
-        if (!isNavigationActivityLit(snapshot.workspaces[workspace.id])) continue;
-        items.push({ kind: "workspace", machineId, projectId: project.id, workspaceId: workspace.id });
-      }
-    } else if (isNavigationActivityLit(snapshot.projects[project.id])) {
-      items.push({ kind: "project", machineId, projectId: project.id });
-    }
+    if (!isNavigationActivityLit(snapshot.projects[project.id])) continue;
+    items.push({ machineId, projectId: project.id });
   }
   return items;
 }
@@ -226,34 +214,27 @@ export class AppNavigationPanel extends LitElement {
       machineId: selectedMachineId({ selectedMachine: this.selectedMachine }),
       snapshot: this.selectedMachineStatusSnapshot(),
       projects: this.projects,
-      selectedProject: this.selectedProject,
-      workspaces: this.workspaces,
     });
   }
 
   private renderActivityRow() {
     const items = this.activityItems();
     if (items.length === 0) return null;
-    return html`<div class="activity-row" role="toolbar" aria-label="Active projects and workspaces">
+    return html`<div class="activity-row" role="toolbar" aria-label="Active projects">
       ${items.map((item) => this.renderActivityChip(item))}
     </div>`;
   }
 
   private renderActivityChip(item: NavigationActivityItem) {
-    const name = item.kind === "workspace"
-      ? this.workspaces.find((workspace) => workspace.id === item.workspaceId)?.label ?? ""
-      : this.projects.find((project) => project.id === item.projectId)?.name ?? "";
+    const name = this.projects.find((project) => project.id === item.projectId)?.name ?? "";
     if (name === "") return null;
-    const action = item.kind === "workspace" ? "workspace" : "project";
-    const flags = item.kind === "workspace"
-      ? this.selectedMachineStatusSnapshot()?.workspaces[item.workspaceId ?? ""]
-      : this.selectedMachineStatusSnapshot()?.projects[item.projectId];
+    const flags = this.selectedMachineStatusSnapshot()?.projects[item.projectId];
     const indicator = renderActivityIndicator(
       statusActivityKind(flags),
-      `${action} active`,
-      hasStatusUnread(flags) ? `Unread in ${action}` : undefined,
+      "project active",
+      hasStatusUnread(flags) ? "Unread in project" : undefined,
     );
-    return html`<button class="activity-chip" title=${`Open ${action} ${name}`} aria-label=${`Open ${action} ${name}`} @click=${() => { this.onJumpToActivity?.(item); }}>${indicator}<span class="activity-chip-name">${name}</span></button>`;
+    return html`<button class="activity-chip" title=${`Open project ${name}`} aria-label=${`Open project ${name}`} @click=${() => { this.onJumpToActivity?.(item); }}>${indicator}<span class="activity-chip-name">${name}</span></button>`;
   }
 
   private renderTabRow() {

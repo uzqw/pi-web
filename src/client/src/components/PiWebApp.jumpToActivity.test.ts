@@ -27,37 +27,43 @@ afterEach(() => {
 });
 
 describe("PiWebApp jump-to-activity wiring", () => {
-  it("jumps to a workspace: opens the Sessions tab, selects the workspace, and opens its unread session", async () => {
+  it("jumps to a lit project's workspace: opens the Sessions tab, drills in, and opens its unread session", async () => {
+    const projectWorkspaces = { "project-1": [workspace("ws-1", "project-1")] };
     const app = createAppWithState({
       projects: [project("project-1")],
       selectedProject: project("project-1"),
       workspaces: [workspace("ws-1", "project-1")],
+      workspacesByProjectId: projectWorkspaces,
+      snapshotWorkspaces: { "ws-1": { "core:unread": true } },
     });
     stubTransitions(app);
     const expand = spyOnExpand(app);
-    const selectWorkspace = stubWorkspaceSelection(app, { "ws-1": [session("session-1"), session("session-2")] });
+    const selectProject = stubProjectSelection(app, projectWorkspaces, { "ws-1": [session("session-1"), session("session-2")] });
     setUnread(app, ["session-2"]);
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "workspace", machineId: "local", projectId: "project-1", workspaceId: "ws-1" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-1" });
 
     expect(expand).toHaveBeenCalledWith("sessions");
-    expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-1" }));
+    expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: "project-1" }), { workspaceId: "ws-1" });
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }));
   });
 
   it("opens the in-flight session when none is unread", async () => {
+    const projectWorkspaces = { "project-1": [workspace("ws-1", "project-1")] };
     const app = createAppWithState({
       projects: [project("project-1")],
       selectedProject: project("project-1"),
       workspaces: [workspace("ws-1", "project-1")],
+      workspacesByProjectId: projectWorkspaces,
+      snapshotWorkspaces: { "ws-1": { "core:working": true } },
       sessionStatuses: { "session-1": sessionStatus({ isStreaming: true }) },
     });
     stubTransitions(app);
-    stubWorkspaceSelection(app, { "ws-1": [session("session-1"), session("session-2")] });
+    stubProjectSelection(app, projectWorkspaces, { "ws-1": [session("session-1"), session("session-2")] });
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "workspace", machineId: "local", projectId: "project-1", workspaceId: "ws-1" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-1" });
 
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-1" }));
   });
@@ -77,7 +83,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     const expand = spyOnExpand(app);
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(expand).toHaveBeenCalledWith("sessions");
     expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: "project-2" }), { workspaceId: "ws-a" });
@@ -94,7 +100,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     stubTransitions(app);
     const selectProject = stubProjectSelection(app, projectWorkspaces, { "ws-a": [] });
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: "project-2" }), undefined);
   });
@@ -115,7 +121,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     setUnread(app, ["session-b2"]);
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-b" }));
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-b2" }));
@@ -136,7 +142,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     setUnread(app, ["session-c1"]);
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-c" }));
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-c1" }));
@@ -156,7 +162,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     const selectWorkspace = stubWorkspaceSelection(app, { "ws-b": [session("session-b1")] });
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-b" }));
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-b1" }));
@@ -174,7 +180,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     const selectWorkspace = stubWorkspaceSelection(app, { "ws-a": [session("session-a1")], "ws-b": [session("session-b1")] });
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: "project-2" }), undefined);
     expect(selectWorkspace).not.toHaveBeenCalled();
@@ -196,7 +202,7 @@ describe("PiWebApp jump-to-activity wiring", () => {
     setUnread(app, ["session-a1"]);
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+    await jumpToActivity(app, { machineId: "local", projectId: "project-2" });
 
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-a1" }));
@@ -209,22 +215,22 @@ describe("PiWebApp jump-to-activity wiring", () => {
     const selectWorkspace = stubWorkspaceSelection(app, {});
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "project", machineId: "remote", projectId: "project-1" });
+    await jumpToActivity(app, { machineId: "remote", projectId: "project-1" });
 
     expect(expand).not.toHaveBeenCalled();
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(selectSession).not.toHaveBeenCalled();
   });
 
-  it("ignores a stale workspace chip whose workspace is gone", async () => {
+  it("ignores a stale jump whose project is gone", async () => {
     const app = createAppWithState({ projects: [project("project-1")], selectedProject: project("project-1") });
     stubTransitions(app);
-    const selectWorkspace = stubWorkspaceSelection(app, {});
+    const selectProject = stubProjectSelection(app, {}, {});
     const selectSession = spyOnSelectSession(app);
 
-    await jumpToActivity(app, { kind: "workspace", machineId: "local", projectId: "project-1", workspaceId: "ghost" });
+    await jumpToActivity(app, { machineId: "local", projectId: "ghost" });
 
-    expect(selectWorkspace).not.toHaveBeenCalled();
+    expect(selectProject).not.toHaveBeenCalled();
     expect(selectSession).not.toHaveBeenCalled();
   });
 });

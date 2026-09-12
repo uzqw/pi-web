@@ -56,6 +56,9 @@ export function expandNavigationSection(expanded: ExpandedNavigationSection, sec
 }
 
 export function nextNavigationSection(section: NavigationSection): NavigationSection | undefined {
+  // A project selection flows straight into sessions: the workspace is picked
+  // from memory (or its first listing), so there is no intermediate stop.
+  if (section === "projects") return "sessions";
   return NAVIGATION_SECTION_ORDER[NAVIGATION_SECTION_ORDER.indexOf(section) + 1];
 }
 

@@ -18,10 +18,10 @@ import { PiWebStatusController } from "../controllers/piWebStatusController";
 import { SessionController } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
 import { WorkspaceController } from "../controllers/workspaceController";
-import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
-import { SessionStorageSessionSelectionMemory } from "../controllers/sessionSelection";
+import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, LocalStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
+import { LocalStorageSessionSelectionMemory } from "../controllers/sessionSelection";
 import { SessionStorageTerminalSelectionMemory } from "../controllers/terminalSelection";
-import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
+import { LocalStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
 import { machineSessionKey } from "../machineKeys";
@@ -147,7 +147,7 @@ export class PiWebApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
     () => { this.updateUrl(); },
-    new SessionStorageSessionSelectionMemory(),
+    new LocalStorageSessionSelectionMemory(),
     {
       notifications: this.notifications,
       onSelectedSessionReady: ({ machineId, session }) => {
@@ -178,7 +178,7 @@ export class PiWebApp extends LitElement {
     (patch) => { this.setState(patch); },
     () => { this.updateUrl(); },
     this.sessions,
-    new SessionStorageWorkspaceSelectionMemory(),
+    new LocalStorageWorkspaceSelectionMemory(),
   );
   private readonly projects = new ProjectController(
     () => this.state,
@@ -213,7 +213,7 @@ export class PiWebApp extends LitElement {
   });
   private readonly machineRealtimeSockets = new Map<string, RealtimeSocket>();
   private readonly activeTerminalIds = new Set<string>();
-  private readonly machineNavigation = new SessionStorageMachineNavigationMemory();
+  private readonly machineNavigation = new LocalStorageMachineNavigationMemory();
   private readonly terminalSelection = new SessionStorageTerminalSelectionMemory();
   private readonly appShell = new AppShellController(this);
   private readonly browserResume = new BrowserResumeController({
@@ -1326,7 +1326,7 @@ export class PiWebApp extends LitElement {
         .onToggleProjects=${() => { this.navigationSections.toggle("projects"); }}
         .onToggleWorkspaces=${() => { this.navigationSections.toggle("workspaces"); }}
         .onToggleSessions=${() => { this.navigationSections.toggle("sessions"); }}
-        .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "workspaces", () => this.workspaces.selectProject(project))}
+        .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "sessions", () => this.workspaces.selectProject(project))}
         .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
         .onSelectWorkspace=${(workspace: Workspace) => this.selectNavigationItem("workspaces", "sessions", () => this.workspaces.selectWorkspace(workspace))}
         .onDeleteWorkspace=${(workspace: Workspace) => { void this.deleteWorkspace(workspace); }}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../api";
 import type { KeyValueStorage } from "./sessionStorageMemory";
-import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, SessionStorageSessionSelectionMemory, shouldDeselectAfterArchivedCollapse } from "./sessionSelection";
+import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, LocalStorageSessionSelectionMemory, shouldDeselectAfterArchivedCollapse } from "./sessionSelection";
 
 describe("selectPreferredSession", () => {
   it("prefers an explicit target session by id", () => {
@@ -64,23 +64,23 @@ describe("InMemorySessionSelectionMemory", () => {
   });
 });
 
-describe("SessionStorageSessionSelectionMemory", () => {
+describe("LocalStorageSessionSelectionMemory", () => {
   it("persists the latest selected session per workspace cwd", () => {
     const storage = memoryStorage();
-    const memory = new SessionStorageSessionSelectionMemory(storage);
+    const memory = new LocalStorageSessionSelectionMemory(storage);
 
     memory.rememberSession({ ...testSession("s1"), cwd: "local:/tmp/one" });
     memory.rememberSession({ ...testSession("s2"), cwd: "remote:/tmp/one" });
 
-    const restored = new SessionStorageSessionSelectionMemory(storage);
+    const restored = new LocalStorageSessionSelectionMemory(storage);
 
     expect(restored.latestSessionId("local:/tmp/one")).toBe("s1");
     expect(restored.latestSessionId("remote:/tmp/one")).toBe("s2");
 
     restored.forgetWorkspace("local:/tmp/one");
 
-    expect(new SessionStorageSessionSelectionMemory(storage).latestSessionId("local:/tmp/one")).toBeUndefined();
-    expect(new SessionStorageSessionSelectionMemory(storage).latestSessionId("remote:/tmp/one")).toBe("s2");
+    expect(new LocalStorageSessionSelectionMemory(storage).latestSessionId("local:/tmp/one")).toBeUndefined();
+    expect(new LocalStorageSessionSelectionMemory(storage).latestSessionId("remote:/tmp/one")).toBe("s2");
   });
 });
 

@@ -1404,15 +1404,37 @@ export class PiWebApp extends LitElement {
   }
 
   private async jumpToProject(item: NavigationActivityItem, project: Project): Promise<void> {
-    const litWorkspaceId = this.litWorkspaceIdForProject(item, project);
+    const litWorkspaceId = this.litWorkspaceIdForProject(item, this.state.workspacesByProjectId[project.id] ?? []);
     await this.workspaces.selectProject(project, litWorkspaceId === undefined ? undefined : { workspaceId: litWorkspaceId });
+    await this.selectLitWorkspaceForProject(item, project);
     await this.selectLitSession();
   }
 
-  /** The target project's lit workspace, when the cached listing knows it: unread first, then any activity. */
-  private litWorkspaceIdForProject(item: NavigationActivityItem, project: Project): string | undefined {
+  /**
+   * Cold-cache correction for project jumps. The per-project workspace listing
+   * (`workspacesByProjectId`) is only written once a project has been visited,
+   * so a project chip clicked against a cold cache made `selectProject` pick the
+   * remembered/first workspace. Now that the freshly loaded listing is in hand,
+   * if that picked workspace is not the lit one but another listed one is
+   * (unread first, then any activity), switch to it before the lit session
+   * selection. A no-op when the cache was already warm — `selectProject` landed
+   * on the lit workspace directly. Mirrors `selectLitSession`'s staleness guards:
+   * a superseded selection (workspace gone, project replaced, machine switched)
+   * drops the correction.
+   */
+  private async selectLitWorkspaceForProject(item: NavigationActivityItem, project: Project): Promise<void> {
+    const machineId = selectedMachineId(this.state);
+    const picked = this.state.selectedWorkspace;
+    if (picked === undefined || this.state.selectedProject?.id !== project.id) return;
+    if (selectedMachineId(this.state) !== machineId) return;
+    const litWorkspace = this.state.workspaces.find((workspace) => workspace.id === this.litWorkspaceIdForProject(item, this.state.workspaces));
+    if (litWorkspace === undefined || litWorkspace.id === picked.id) return;
+    await this.workspaces.selectWorkspace(litWorkspace);
+  }
+
+  /** The target project's lit workspace within a listing: unread first, then any activity. */
+  private litWorkspaceIdForProject(item: NavigationActivityItem, workspaces: Workspace[]): string | undefined {
     const snapshot = this.state.machineStatusSnapshots[item.machineId];
-    const workspaces = this.state.workspacesByProjectId[project.id] ?? [];
     const lit = workspaces.filter((workspace) => isNavigationActivityLit(snapshot?.workspaces[workspace.id]));
     const unread = lit.find((workspace) => hasStatusUnread(snapshot?.workspaces[workspace.id]));
     return (unread ?? lit[0])?.id;

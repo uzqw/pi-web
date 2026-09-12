@@ -99,6 +99,109 @@ describe("PiWebApp jump-to-activity wiring", () => {
     expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: "project-2" }), undefined);
   });
 
+  it("drills into the lit workspace when the project listing was cold at click time", async () => {
+    const projectWorkspaces = { "project-2": [workspace("ws-a", "project-2"), workspace("ws-b", "project-2")] };
+    const app = createAppWithState({
+      projects: [project("project-1"), project("project-2")],
+      selectedProject: project("project-1"),
+      workspaces: [workspace("ws-1", "project-1")],
+      // workspacesByProjectId is left cold on purpose: after reload only the route-restored
+      // project is cached, so an untouched-but-lit project chip must correct course.
+      snapshotWorkspaces: { "ws-a": {}, "ws-b": { "core:unread": true } },
+    });
+    stubTransitions(app);
+    stubProjectSelection(app, projectWorkspaces, { "ws-a": [session("session-a1")], "ws-b": [session("session-b1")] });
+    const selectWorkspace = stubWorkspaceSelection(app, { "ws-b": [session("session-b1"), session("session-b2")] });
+    setUnread(app, ["session-b2"]);
+    const selectSession = spyOnSelectSession(app);
+
+    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+
+    expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-b" }));
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-b2" }));
+  });
+
+  it("cold-cache drill prefers the unread-lit workspace before an in-flight one", async () => {
+    const projectWorkspaces = { "project-2": [workspace("ws-a", "project-2"), workspace("ws-b", "project-2"), workspace("ws-c", "project-2")] };
+    const app = createAppWithState({
+      projects: [project("project-1"), project("project-2")],
+      selectedProject: project("project-1"),
+      workspaces: [workspace("ws-1", "project-1")],
+      // ws-a idle, ws-b in-flight only, ws-c unread: the drill must land on ws-c.
+      snapshotWorkspaces: { "ws-a": {}, "ws-b": { "core:working": true }, "ws-c": { "core:unread": true } },
+    });
+    stubTransitions(app);
+    stubProjectSelection(app, projectWorkspaces, { "ws-c": [session("session-c1")] });
+    const selectWorkspace = stubWorkspaceSelection(app, { "ws-c": [session("session-c1")] });
+    setUnread(app, ["session-c1"]);
+    const selectSession = spyOnSelectSession(app);
+
+    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+
+    expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-c" }));
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-c1" }));
+  });
+
+  it("cold-cache drill lands on an in-flight workspace when nothing is unread", async () => {
+    const projectWorkspaces = { "project-2": [workspace("ws-a", "project-2"), workspace("ws-b", "project-2")] };
+    const app = createAppWithState({
+      projects: [project("project-1"), project("project-2")],
+      selectedProject: project("project-1"),
+      workspaces: [workspace("ws-1", "project-1")],
+      snapshotWorkspaces: { "ws-a": {}, "ws-b": { "core:working": true } },
+      sessionStatuses: { "session-b1": sessionStatus({ isStreaming: true }) },
+    });
+    stubTransitions(app);
+    stubProjectSelection(app, projectWorkspaces, { "ws-b": [session("session-b1")] });
+    const selectWorkspace = stubWorkspaceSelection(app, { "ws-b": [session("session-b1")] });
+    const selectSession = spyOnSelectSession(app);
+
+    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+
+    expect(selectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-b" }));
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-b1" }));
+  });
+
+  it("cold-cache jump keeps the preferred workspace when none of the freshly listed ones is lit", async () => {
+    const projectWorkspaces = { "project-2": [workspace("ws-a", "project-2"), workspace("ws-b", "project-2")] };
+    const app = createAppWithState({
+      projects: [project("project-1"), project("project-2")],
+      selectedProject: project("project-1"),
+      workspaces: [workspace("ws-1", "project-1")],
+    });
+    stubTransitions(app);
+    const selectProject = stubProjectSelection(app, projectWorkspaces, { "ws-a": [session("session-a1")], "ws-b": [session("session-b1")] });
+    const selectWorkspace = stubWorkspaceSelection(app, { "ws-a": [session("session-a1")], "ws-b": [session("session-b1")] });
+    const selectSession = spyOnSelectSession(app);
+
+    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+
+    expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: "project-2" }), undefined);
+    expect(selectWorkspace).not.toHaveBeenCalled();
+    expect(selectSession).not.toHaveBeenCalled();
+  });
+
+  it("cold-cache jump opens the unread session when the preferred workspace is already lit", async () => {
+    const projectWorkspaces = { "project-2": [workspace("ws-a", "project-2"), workspace("ws-b", "project-2")] };
+    const app = createAppWithState({
+      projects: [project("project-1"), project("project-2")],
+      selectedProject: project("project-1"),
+      workspaces: [workspace("ws-1", "project-1")],
+      // ws-a is both the preferred (first) and the lit workspace: no re-selection needed.
+      snapshotWorkspaces: { "ws-a": { "core:unread": true } },
+    });
+    stubTransitions(app);
+    stubProjectSelection(app, projectWorkspaces, { "ws-a": [session("session-a1")], "ws-b": [session("session-b1")] });
+    const selectWorkspace = stubWorkspaceSelection(app, { "ws-a": [session("session-a1")] });
+    setUnread(app, ["session-a1"]);
+    const selectSession = spyOnSelectSession(app);
+
+    await jumpToActivity(app, { kind: "project", machineId: "local", projectId: "project-2" });
+
+    expect(selectWorkspace).not.toHaveBeenCalled();
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-a1" }));
+  });
+
   it("ignores a jump whose machine no longer matches the selection", async () => {
     const app = createAppWithState({ projects: [project("project-1")], selectedProject: project("project-1") });
     stubTransitions(app);

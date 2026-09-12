@@ -258,20 +258,21 @@ export class AppNavigationPanel extends LitElement {
 
   private renderTabRow() {
     const active = this.activeTabSection();
-    const tabs: { section: NavigationSection; name: string; count: number }[] = [];
-    if (shouldShowMachinesSection(this.machines)) tabs.push({ section: "machines", name: "Machines", count: this.machines.length });
-    tabs.push({ section: "projects", name: "Projects", count: this.projects.length });
-    tabs.push({ section: "workspaces", name: "Workspaces", count: this.workspaces.length });
-    tabs.push({ section: "sessions", name: "Sessions", count: this.sessions.length });
+    const tabs: { section: NavigationSection; name: string; letter: string }[] = [
+      { section: "projects", name: "Projects", letter: "P" },
+      { section: "workspaces", name: "Workspaces", letter: "W" },
+      { section: "sessions", name: "Sessions", letter: "S" },
+    ];
     return html`<nav class="section-tabs" aria-label="Sidebar sections">
       ${tabs.map((tab) => {
         const { kind, unread } = navigationSectionActivity(tab.section, this.sectionActivityOptions());
         return html`<button
           class=${`section-tab${tab.section === active ? " active" : ""}`}
           aria-pressed=${String(tab.section === active)}
-          title=${unread ? `Unread in ${tab.name}` : `${tab.name}: ${String(tab.count)}`}
+          aria-label=${tab.name}
+          title=${unread ? `Unread in ${tab.name}` : tab.name}
           @click=${() => { this.onSelectTab?.(tab.section); }}
-        ><span class="section-tab-name">${tab.name}</span><small class="section-tab-count">${tab.count}</small>${renderActivityIndicator(kind, `${tab.name} active`, unread ? `Unread in ${tab.name}` : undefined)}</button>`;
+        ><span class="section-tab-name">${tab.letter}</span>${renderActivityIndicator(kind, `${tab.name} active`, unread ? `Unread in ${tab.name}` : undefined)}</button>`;
       })}
     </nav>`;
   }
@@ -314,8 +315,8 @@ export class AppNavigationPanel extends LitElement {
   }
 
   /**
-   * The desktop tab that is open. Machines is a tab only when a machine choice
-   * exists (the single-machine switcher is a header bubble, not a list).
+   * The desktop tab that is open. The tab bar is projects/workspaces/sessions
+   * only; machines never opens a tab (its switcher lives in the header).
    */
   private activeTabSection(): NavigationSection {
     const collapsed: Record<NavigationSection, boolean> = {
@@ -324,7 +325,7 @@ export class AppNavigationPanel extends LitElement {
       workspaces: this.workspacesCollapsed,
       sessions: this.sessionsCollapsed,
     };
-    return visibleNavigationSections(this.machines).find((section) => !collapsed[section]) ?? "projects";
+    return TAB_BAR_SECTIONS.find((section) => !collapsed[section]) ?? "projects";
   }
 
   private renderMachineList() {
@@ -458,7 +459,6 @@ export class AppNavigationPanel extends LitElement {
     .section-tab:hover { background: var(--pi-surface-hover); }
     .section-tab.active { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .section-tab-name { font-weight: 600; }
-    .section-tab-count { color: var(--pi-muted); }
     .section-tab .activity-indicator, .section-tab .unread-ring { margin: 0; }
     /* Expanded sections share the panel height equally, so collapsing one
        section distributes its space to every remaining section, not just the
@@ -478,6 +478,9 @@ export class AppNavigationPanel extends LitElement {
 export function shouldShowMachinesSection(machines: readonly Machine[]): boolean {
   return machines.length > 1;
 }
+
+/** The desktop tab bar: one letter per section, machines never tabbed. */
+const TAB_BAR_SECTIONS = ["projects", "workspaces", "sessions"] as const satisfies readonly NavigationSection[];
 
 function previousVisibleNavigationTarget(section: NavigationSection, machines: readonly Machine[]): NavigationSection | undefined {
   const sections = visibleNavigationSections(machines);

@@ -172,7 +172,7 @@ describe("navigationSectionActivity", () => {
 });
 
 describe("desktop tab row", () => {
-  it("renders one tab per section with name, count, and activity, machines only when a machine choice exists", async () => {
+  it("renders one letter tab per section with activity and never a machines tab", async () => {
     const snapshot = machineStatusSnapshot({ projects: { "project-1": { "core:working": true } } });
     const panel = await mountTabbedPanel((candidate) => {
       candidate.machines = [machine("local"), machine("remote-a")];
@@ -180,24 +180,17 @@ describe("desktop tab row", () => {
     });
     const tabs = panel.shadowRoot ? [...panel.shadowRoot.querySelectorAll<HTMLElement>(".section-tab")] : [];
 
-    expect(tabs.map((tabEl) => tabEl.querySelector(".section-tab-name")?.textContent)).toEqual(["Machines", "Projects", "Workspaces", "Sessions"]);
-    expect(tab(tabs, "Projects").querySelector(".section-tab-count")?.textContent).toBe("1");
-    expect(tab(tabs, "Projects").querySelector(".activity-indicator")).not.toBeNull();
-    expect(tab(tabs, "Sessions").querySelector(".activity-indicator")).toBeNull();
-  });
-
-  it("omits the machines tab without a machine choice", async () => {
-    const panel = await mountTabbedPanel();
-    const tabs = panel.shadowRoot ? [...panel.shadowRoot.querySelectorAll<HTMLElement>(".section-tab")] : [];
-
-    expect(tabs.map((tabEl) => tabEl.querySelector(".section-tab-name")?.textContent)).toEqual(["Projects", "Workspaces", "Sessions"]);
+    expect(tabs.map((tabEl) => tabEl.querySelector(".section-tab-name")?.textContent)).toEqual(["P", "W", "S"]);
+    expect(tabs.some((tabEl) => tabEl.title.includes("Machines"))).toBe(false);
+    expect(tab(tabs, "P").querySelector(".activity-indicator")).not.toBeNull();
+    expect(tab(tabs, "S").querySelector(".activity-indicator")).toBeNull();
   });
 
   it("highlights the open tab and renders only its list on desktop", async () => {
     const panel = await mountTabbedPanel();
 
-    expect(tab(panel, "Projects").classList.contains("active")).toBe(true);
-    expect(tab(panel, "Sessions").classList.contains("active")).toBe(false);
+    expect(tab(panel, "P").classList.contains("active")).toBe(true);
+    expect(tab(panel, "S").classList.contains("active")).toBe(false);
     expect(panel.shadowRoot?.querySelector("project-list")).toBeInstanceOf(ProjectList);
     expect(panel.shadowRoot?.querySelector("workspace-list")).toBeNull();
     expect(panel.shadowRoot?.querySelector("session-list")).toBeNull();
@@ -208,7 +201,7 @@ describe("desktop tab row", () => {
     const onSelectTab = vi.fn();
     panel.onSelectTab = onSelectTab;
 
-    tab(panel, "Sessions").click();
+    tab(panel, "S").click();
 
     expect(onSelectTab).toHaveBeenCalledWith("sessions");
   });
@@ -218,7 +211,7 @@ describe("desktop tab row", () => {
       candidate.unreadSessionIds = new Set(["session-1"]);
     });
 
-    expect(tab(panel, "Sessions").querySelector(".activity-indicator.unread")).not.toBeNull();
+    expect(tab(panel, "S").querySelector(".activity-indicator.unread")).not.toBeNull();
   });
 });
 
@@ -307,12 +300,12 @@ async function mountTabbedPanel(apply: (panel: AppNavigationPanel) => void = () 
   return panel;
 }
 
-function tab(panelOrTabs: AppNavigationPanel | HTMLElement[], name: string): HTMLElement {
+function tab(panelOrTabs: AppNavigationPanel | HTMLElement[], letter: string): HTMLElement {
   const tabs: HTMLElement[] = panelOrTabs instanceof AppNavigationPanel
     ? (panelOrTabs.shadowRoot ? [...panelOrTabs.shadowRoot.querySelectorAll<HTMLElement>(".section-tab")] : [])
     : panelOrTabs;
-  const match = tabs.find((tabEl) => tabEl.querySelector(".section-tab-name")?.textContent === name);
-  if (match === undefined) throw new Error(`Expected a ${name} tab`);
+  const match = tabs.find((tabEl) => tabEl.querySelector(".section-tab-name")?.textContent === letter);
+  if (match === undefined) throw new Error(`Expected a ${letter} tab`);
   return match;
 }
 

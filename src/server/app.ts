@@ -268,7 +268,13 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
       (error) => { app.log.warn({ err: error }, "failed to detect PI WEB deployment flavor"); },
     );
     registerDeploymentIdentityAssetRoutes(app, { clientDist, flavor: deploymentFlavor });
-    app.setNotFoundHandler((_request, reply) => reply.sendFile("index.html"));
+    app.setNotFoundHandler((request, reply) => {
+      // API misses must stay JSON: the SPA fallback is for browser navigation,
+      // and serving HTML at /api paths makes JSON-parsing callers throw on the
+      // index document instead of surfacing a clean 404.
+      if (request.url.startsWith("/api")) return reply.code(404).send({ error: "Not found" });
+      return reply.sendFile("index.html");
+    });
   }
 
   return app;

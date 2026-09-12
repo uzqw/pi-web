@@ -436,11 +436,19 @@ export class AppNavigationPanel extends LitElement {
     .activity-chip .activity-indicator, .activity-chip .unread-ring { margin: 0; }
     .activity-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .section-tabs { flex: 0 0 auto; display: flex; align-items: stretch; gap: 6px; padding: 0 12px 10px; }
-    .section-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); font: inherit; cursor: pointer; }
+    .section-tab { position: relative; flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; padding: 8px 6px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); font: inherit; cursor: pointer; }
     .section-tab:hover { background: var(--pi-surface-hover); }
     .section-tab.active { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
-    .section-tab-name { font-weight: 600; }
-    .section-tab .activity-indicator, .section-tab .unread-ring { margin: 0; }
+    .section-tab-name { font-weight: 600; font-size: 13px; line-height: 1; }
+    /* Activity dots are fixed corner badges: absolutely positioned so their
+       presence or absence never changes the button size. */
+    .section-tab .activity-indicator, .section-tab .unread-ring { position: absolute; top: 4px; right: 5px; margin: 0; vertical-align: 0; }
+    .section-tab .activity-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--pi-success); }
+    .section-tab .activity-indicator.terminal { border-radius: 2px; background: var(--pi-accent); }
+    .section-tab .activity-indicator.sending { background: var(--pi-warning); }
+    .section-tab .activity-indicator.unread { background: var(--pi-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pi-accent) 20%, transparent); }
+    .section-tab .unread-ring { display: grid; place-items: center; width: 10px; height: 10px; border: 1.5px solid var(--pi-accent); border-radius: 50%; }
+    .section-tab .unread-ring .activity-indicator { position: static; width: 5px; height: 5px; border-radius: 50%; background: var(--pi-accent); box-shadow: none; }
     /* Expanded sections share the panel height equally, so collapsing one
        section distributes its space to every remaining section, not just the
        session list. Collapsed sections keep only their heading height. */

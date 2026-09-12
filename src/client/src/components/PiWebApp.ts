@@ -4,6 +4,7 @@ import { configApi, effectiveWorkspaceAttachmentsFolder, effectiveWorkspaceUploa
 import type { AppAction } from "../actions";
 import { initialAppState, type AppState, type ModelDialogOrigin } from "../appState";
 import { browserErrorContext, browserErrorScopeKey, BrowserErrorReporter, clearBrowserError, machineBrowserErrorScope, visibleBrowserErrors, workspaceBrowserErrorScope, type BrowserError, type BrowserErrorScope } from "../browserErrors";
+import { hasStatusUnread } from "./activityBadge";
 import { isSessionActive } from "../../../shared/activity";
 import { workspaceDeleteOperation } from "../../../shared/workspaceDeletion";
 import { PI_WEB_CAPABILITIES, supportsPiWebCapability } from "../../../shared/capabilities";
@@ -54,7 +55,7 @@ import { canDeleteWorkspace, isWorkspaceDeletionPending, isWorkspaceDeletionRunP
 import "./MachineList";
 import "./ProjectList";
 import "./WorkspaceList";
-import { unreadSessionCount } from "./SessionList";
+import { sessionRowActivityKind, sessionRowUnread, unreadSessionCount } from "./SessionList";
 import "./SessionCleanupDialog";
 import "./SessionTreeNavigator";
 import "./ChatView";
@@ -76,7 +77,7 @@ import type { WorkspacePanelEmptyState } from "./WorkspacePanel";
 import "./appShell/AppContextBar";
 import "./appShell/AppMobileMainTabs";
 import type { AppMobileMainTab } from "./appShell/AppMobileMainTabs";
-import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocusTarget } from "./appShell/AppNavigationPanel";
+import { shouldShowMachinesSection, isNavigationActivityLit, type AppNavigationPanel, type NavigationActivityItem, type NavigationFocusTarget } from "./appShell/AppNavigationPanel";
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import { errorBanner } from "./errorBanner";
@@ -86,6 +87,7 @@ import { appStyles } from "./shared";
 
 const PI_WEB_STATUS_REFRESH_MS = 15 * 60 * 1000;
 const SELECTED_SESSION_REFRESH_MS = 5_000;
+const SESSION_LISTING_REFRESH_MS = 30_000;
 const PI_WEB_STATUS_DEFER_MS = 750;
 const REMOTE_ROUTE_RESTORE_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000] as const;
 const GLOBAL_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
@@ -230,6 +232,7 @@ export class PiWebApp extends LitElement {
   private terminalAutoStartWorkspaceId: string | undefined;
   private piWebStatusTimer: number | undefined;
   private selectedSessionRefreshTimer: number | undefined;
+  private sessionListingRefreshTimer: number | undefined;
   private piWebStatusDeferredTimer: number | undefined;
   private workspaceDeletionPollTimer: number | undefined;
   private refreshingWorkspaceDeletionRuns = false;
@@ -363,6 +366,7 @@ export class PiWebApp extends LitElement {
     this.syncSessionUnreadMachines();
     this.piWebStatusTimer = window.setInterval(() => { this.schedulePiWebStatusRefresh(); }, PI_WEB_STATUS_REFRESH_MS);
     this.scheduleSelectedSessionRefresh();
+    this.scheduleSessionListingRefresh();
     void this.loadClientConfig();
     void this.ensureGatewayPluginsLoaded();
     void this.loadProjectsAndRestoreRoute().finally(() => { this.schedulePiWebStatusRefresh(); });
@@ -389,6 +393,8 @@ export class PiWebApp extends LitElement {
     this.piWebStatusTimer = undefined;
     if (this.selectedSessionRefreshTimer !== undefined) window.clearTimeout(this.selectedSessionRefreshTimer);
     this.selectedSessionRefreshTimer = undefined;
+    if (this.sessionListingRefreshTimer !== undefined) window.clearTimeout(this.sessionListingRefreshTimer);
+    this.sessionListingRefreshTimer = undefined;
     this.clearScheduledPiWebStatusRefresh();
     if (this.workspaceDeletionPollTimer !== undefined) window.clearInterval(this.workspaceDeletionPollTimer);
     this.workspaceDeletionPollTimer = undefined;
@@ -443,6 +449,10 @@ export class PiWebApp extends LitElement {
     await this.sessionUnread.refreshAll();
     await Promise.all([
       this.sessions.refreshSelectedSession(),
+      // A session renamed by another Pi process only reaches the sidebar through
+      // this listing, so resuming the browser re-reads it like the workspace
+      // topology below.
+      this.sessions.refreshCurrentWorkspaceSessions(),
       this.refreshMachineStatusSnapshots(),
       this.refreshWorkspaceDeletionRuns(),
       this.refreshCurrentWorkspaceSurface(),
@@ -465,6 +475,28 @@ export class PiWebApp extends LitElement {
     if (session === undefined || session.archived === true || document.visibilityState !== "visible") return;
     if (status?.isStreaming === true || status?.isCompacting === true || status?.isBashRunning === true || (status?.pendingMessageCount ?? 0) > 0) return;
     await this.sessions.refreshSelectedSession(session.id, { silent: true });
+  }
+
+  /**
+   * Re-lists the selected workspace so a session renamed or deleted by another Pi
+   * process reaches the sidebar without a manual reload. Mirrors the
+   * selected-session poll above: a hidden tab and a busy selected session are
+   * both skipped, because re-listing re-scans every session file that grew since
+   * the last scan.
+   */
+  private scheduleSessionListingRefresh(): void {
+    if (this.sessionListingRefreshTimer !== undefined) window.clearTimeout(this.sessionListingRefreshTimer);
+    this.sessionListingRefreshTimer = window.setTimeout(() => {
+      this.sessionListingRefreshTimer = undefined;
+      void this.refreshSessionListing().finally(() => { this.scheduleSessionListingRefresh(); });
+    }, SESSION_LISTING_REFRESH_MS);
+  }
+
+  private async refreshSessionListing(): Promise<void> {
+    const status = this.state.status;
+    if (this.state.selectedWorkspace === undefined || document.visibilityState !== "visible") return;
+    if (status?.isStreaming === true || status?.isCompacting === true || status?.isBashRunning === true || (status?.pendingMessageCount ?? 0) > 0) return;
+    await this.sessions.refreshCurrentWorkspaceSessions();
   }
 
   private schedulePiWebStatusRefresh(delayMs = PI_WEB_STATUS_DEFER_MS): void {
@@ -524,6 +556,7 @@ export class PiWebApp extends LitElement {
     try {
       await Promise.all([
         this.sessions.refreshSelectedSession(),
+        this.sessions.refreshCurrentWorkspaceSessions(),
         this.refreshMachineStatusSnapshots(),
         this.loadClientConfig(),
         this.refreshWorkspaceDeletionRuns(),
@@ -1283,6 +1316,7 @@ export class PiWebApp extends LitElement {
         .canStartSession=${!!this.state.selectedWorkspace}
         .collapsible=${true}
         .compact=${this.appShell.isMobileNavigationLayout}
+        .tabbed=${!this.appShell.isMobileNavigationLayout}
         .projectsCollapsed=${this.navigationSections.isCollapsed("projects")}
         .workspacesCollapsed=${this.navigationSections.isCollapsed("workspaces")}
         .sessionsCollapsed=${this.navigationSections.isCollapsed("sessions")}
@@ -1313,6 +1347,8 @@ export class PiWebApp extends LitElement {
         .onCleanupSessions=${() => { this.openSessionCleanupDialog(); }}
         .onFocusNavigationTarget=${(target: NavigationFocusTarget) => { void this.focusNavigationTarget(target); }}
         .onCancelKeyboardNavigation=${() => { void this.focusChatComposer(); }}
+        .onSelectTab=${(section: NavigationSection) => { this.navigationSections.expand(section); }}
+        .onJumpToActivity=${(item: NavigationActivityItem) => { void this.jumpToActivity(item); }}
       ></app-navigation-panel>
     `;
   }
@@ -1340,6 +1376,61 @@ export class PiWebApp extends LitElement {
 
     this.navigationSections.advanceAfterSelection("sessions");
     await this.startSessionAndOpenChat(isCurrentSelection);
+  }
+
+  /**
+   * Jump from the desktop activity row to the lit project or workspace: opens
+   * the Sessions tab, selects the target, then opens the active/unread session
+   * its listing holds. Items always belong to the selected machine — the row
+   * is drawn from that machine's snapshot — so a machine switch between render
+   * and click drops the jump instead of crossing machines.
+   */
+  private async jumpToActivity(item: NavigationActivityItem): Promise<void> {
+    if (item.machineId !== selectedMachineId(this.state)) return;
+    const project = this.state.projects.find((candidate) => candidate.id === item.projectId);
+    if (project === undefined) return;
+    this.navigationSections.expand("sessions");
+    await this.selectNavigationItem("sessions", "chat", async () => {
+      if (item.kind === "workspace") await this.jumpToWorkspace(item, project);
+      else await this.jumpToProject(item, project);
+    });
+  }
+
+  private async jumpToWorkspace(item: NavigationActivityItem, project: Project): Promise<void> {
+    const workspace = this.state.workspaces.find((candidate) => candidate.id === item.workspaceId && candidate.projectId === project.id);
+    if (workspace === undefined) return;
+    await this.workspaces.selectWorkspace(workspace);
+    await this.selectLitSession();
+  }
+
+  private async jumpToProject(item: NavigationActivityItem, project: Project): Promise<void> {
+    const litWorkspaceId = this.litWorkspaceIdForProject(item, project);
+    await this.workspaces.selectProject(project, litWorkspaceId === undefined ? undefined : { workspaceId: litWorkspaceId });
+    await this.selectLitSession();
+  }
+
+  /** The target project's lit workspace, when the cached listing knows it: unread first, then any activity. */
+  private litWorkspaceIdForProject(item: NavigationActivityItem, project: Project): string | undefined {
+    const snapshot = this.state.machineStatusSnapshots[item.machineId];
+    const workspaces = this.state.workspacesByProjectId[project.id] ?? [];
+    const lit = workspaces.filter((workspace) => isNavigationActivityLit(snapshot?.workspaces[workspace.id]));
+    const unread = lit.find((workspace) => hasStatusUnread(snapshot?.workspaces[workspace.id]));
+    return (unread ?? lit[0])?.id;
+  }
+
+  /**
+   * After a jump has loaded the target workspace's sessions, prefer the unread
+   * one, then any in-flight one, over the remembered/latest first choice.
+   */
+  private async selectLitSession(): Promise<void> {
+    const machineId = selectedMachineId(this.state);
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) return;
+    const session = this.state.sessions.find((candidate) => sessionRowUnread(candidate, this.unreadSessionIds))
+      ?? this.state.sessions.find((candidate) => sessionRowActivityKind(candidate, this.state.sessionStatuses[candidate.id], this.state.sessionActivities[candidate.id], this.state.sendingPrompts[candidate.id] === true) !== undefined);
+    if (session === undefined || this.state.selectedSession?.id === session.id) return;
+    if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
+    await this.sessions.selectSession(session);
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {

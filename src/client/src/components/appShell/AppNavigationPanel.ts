@@ -1,12 +1,15 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, query } from "lit/decorators.js";
 import type { Machine, MachineHealth, Project, SessionActivity, SessionInfo, SessionStatus, Workspace } from "../../api";
-import type { MachineStatusSnapshot } from "../../../../shared/machineStatus";
+import type { MachineStatusSnapshot, StatusFlags } from "../../../../shared/machineStatus";
+import { rollUpStatusFlags } from "../../../../shared/machineStatus";
 import type { WorkspaceLabelItem } from "../../plugins/types";
 import { selectedMachineId } from "../../controllers/types";
 import type { NavigationSection } from "../../appShell/navigationState";
 import { NAVIGATION_SECTION_ORDER } from "../../appShell/navigationState";
 import type { KeyboardNavigableSection } from "../navigationFocus";
+import { hasStatusUnread, renderActivityIndicator, statusActivityKind, type ActivityIndicatorKind } from "../activityBadge";
+import { sessionRowActivityKind, sessionRowUnread } from "../SessionList";
 import "../MachineList";
 import "../MachineSwitcher";
 import "../ProjectList";
@@ -14,6 +17,94 @@ import "../WorkspaceList";
 import "../SessionList";
 
 export type NavigationFocusTarget = NavigationSection | "chat";
+
+/**
+ * One clickable entry in the desktop activity row: a lit project at project
+ * granularity, or a lit workspace of the selected project at workspace
+ * granularity. Every item resolves against the currently selected machine.
+ */
+export interface NavigationActivityItem {
+  readonly kind: "project" | "workspace";
+  readonly machineId: string;
+  readonly projectId: string;
+  readonly workspaceId?: string;
+}
+
+export interface NavigationActivityOptions {
+  machineId: string;
+  snapshot: MachineStatusSnapshot | undefined;
+  projects: readonly Project[];
+  selectedProject: Project | undefined;
+  workspaces: readonly Workspace[];
+}
+
+/** The dot a desktop tab shows for one section. */
+export interface NavigationSectionActivity {
+  kind: ActivityIndicatorKind | undefined;
+  unread: boolean;
+}
+
+export interface NavigationSectionActivityOptions {
+  machines: readonly Machine[];
+  machineStatusSnapshots: Record<string, MachineStatusSnapshot>;
+  snapshot: MachineStatusSnapshot | undefined;
+  projects: readonly Project[];
+  workspaces: readonly Workspace[];
+  sessions: readonly SessionInfo[];
+  sessionStatuses: Record<string, SessionStatus>;
+  sessionActivities: Record<string, SessionActivity>;
+  sendingPrompts: Record<string, true>;
+  unreadSessionIds: ReadonlySet<string>;
+}
+
+/**
+ * Whether a status node is lit: unread work below it, or in-flight activity of
+ * any kind. The row and tab dots both draw on this.
+ */
+export function isNavigationActivityLit(flags: StatusFlags | undefined): boolean {
+  return hasStatusUnread(flags) || statusActivityKind(flags) !== undefined;
+}
+
+/**
+ * The clickable activity row: lit workspaces of the selected project at
+ * workspace granularity (the sidebar only loads those worktrees), every other
+ * lit project at project granularity. Drawn from the same selected-machine
+ * snapshot the lists render, so every item is jumpable.
+ */
+export function navigationActivityItems(options: NavigationActivityOptions): NavigationActivityItem[] {
+  const { machineId, snapshot, projects, selectedProject, workspaces } = options;
+  if (snapshot === undefined) return [];
+  const items: NavigationActivityItem[] = [];
+  for (const project of projects) {
+    if (project.id === selectedProject?.id) {
+      for (const workspace of workspaces) {
+        if (!isNavigationActivityLit(snapshot.workspaces[workspace.id])) continue;
+        items.push({ kind: "workspace", machineId, projectId: project.id, workspaceId: workspace.id });
+      }
+    } else if (isNavigationActivityLit(snapshot.projects[project.id])) {
+      items.push({ kind: "project", machineId, projectId: project.id });
+    }
+  }
+  return items;
+}
+
+/**
+ * The dot a desktop tab shows, resolving exactly what its list renders:
+ * machines roll up every machine snapshot, projects and workspaces roll up the
+ * listed rows' flags, and sessions resolve their own row indicators.
+ */
+export function navigationSectionActivity(section: NavigationSection, options: NavigationSectionActivityOptions): NavigationSectionActivity {
+  switch (section) {
+    case "machines":
+      return flagsActivity(options.machines.map((machine) => options.machineStatusSnapshots[machine.id]?.machine));
+    case "projects":
+      return flagsActivity(options.projects.map((project) => options.snapshot?.projects[project.id]));
+    case "workspaces":
+      return flagsActivity(options.workspaces.map((workspace) => options.snapshot?.workspaces[workspace.id]));
+    case "sessions":
+      return sessionsActivity(options);
+  }
+}
 
 @customElement("app-navigation-panel")
 export class AppNavigationPanel extends LitElement {
@@ -38,6 +129,8 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) refreshControl: unknown;
   @property({ type: Boolean, reflect: true }) collapsible = false;
   @property({ type: Boolean, reflect: true }) compact = false;
+  /** Desktop tabs: one row of sections above the lists, only the open tab's list rendered. */
+  @property({ type: Boolean, reflect: true }) tabbed = false;
   @property({ type: Boolean }) machinesCollapsed = false;
   @property({ type: Boolean }) projectsCollapsed = false;
   @property({ type: Boolean }) workspacesCollapsed = false;
@@ -72,6 +165,8 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onRemoveMachine?: (machine: Machine) => void | Promise<void>;
   @property({ attribute: false }) onFocusNavigationTarget?: (target: NavigationFocusTarget) => void | Promise<void>;
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
+  @property({ attribute: false }) onSelectTab?: (section: NavigationSection) => void;
+  @property({ attribute: false }) onJumpToActivity?: (item: NavigationActivityItem) => void;
 
   @query("machine-list") private machineList?: KeyboardNavigableSection;
   @query("machine-switcher") private machineSwitcher?: KeyboardNavigableSection;
@@ -109,21 +204,149 @@ export class AppNavigationPanel extends LitElement {
           <button title="Show Actions" aria-label="Show Actions" @click=${() => { this.onShowActions?.(); }}>Actions</button>
         </div>
       </header>
-      ${this.compact && shouldShowMachinesSection(this.machines) ? html`
-        <machine-list
-          .machines=${this.machines}
-          .selected=${this.selectedMachine}
-          .statuses=${this.machineStatuses}
-          .statusSnapshots=${this.machineStatusSnapshots}
-          .collapsible=${this.collapsible}
-          .collapsed=${this.machinesCollapsed}
-          .onToggleCollapsed=${() => { this.onToggleMachines?.(); }}
-          .onSelect=${(machine: Machine) => this.onSelectMachine?.(machine)}
-          .onRemove=${(machine: Machine) => this.onRemoveMachine?.(machine)}
-          .onFocusNextSection=${() => { this.focusNextFrom("machines"); }}
-          .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
-        ></machine-list>
-      ` : null}
+      ${this.tabbed ? this.renderActivityRow() : null}
+      ${this.tabbed ? this.renderTabRow() : null}
+      ${this.tabbed ? this.renderActiveSection() : this.renderStackedSections()}
+    `;
+  }
+
+  /**
+   * Project and workspace rows always belong to the selected machine, resolved
+   * exactly as the rest of the app resolves it — including its local-machine
+   * default, which is the key snapshots arrive under before a machine has been
+   * selected. Diverging here would blank every row's indicator while a snapshot
+   * is in fact loaded.
+   */
+  private selectedMachineStatusSnapshot(): MachineStatusSnapshot | undefined {
+    return this.machineStatusSnapshots[selectedMachineId({ selectedMachine: this.selectedMachine })];
+  }
+
+  private activityItems(): NavigationActivityItem[] {
+    return navigationActivityItems({
+      machineId: selectedMachineId({ selectedMachine: this.selectedMachine }),
+      snapshot: this.selectedMachineStatusSnapshot(),
+      projects: this.projects,
+      selectedProject: this.selectedProject,
+      workspaces: this.workspaces,
+    });
+  }
+
+  private renderActivityRow() {
+    const items = this.activityItems();
+    if (items.length === 0) return null;
+    return html`<div class="activity-row" role="toolbar" aria-label="Active projects and workspaces">
+      ${items.map((item) => this.renderActivityChip(item))}
+    </div>`;
+  }
+
+  private renderActivityChip(item: NavigationActivityItem) {
+    const name = item.kind === "workspace"
+      ? this.workspaces.find((workspace) => workspace.id === item.workspaceId)?.label ?? ""
+      : this.projects.find((project) => project.id === item.projectId)?.name ?? "";
+    if (name === "") return null;
+    const action = item.kind === "workspace" ? "workspace" : "project";
+    const flags = item.kind === "workspace"
+      ? this.selectedMachineStatusSnapshot()?.workspaces[item.workspaceId ?? ""]
+      : this.selectedMachineStatusSnapshot()?.projects[item.projectId];
+    const indicator = renderActivityIndicator(
+      statusActivityKind(flags),
+      `${action} active`,
+      hasStatusUnread(flags) ? `Unread in ${action}` : undefined,
+    );
+    return html`<button class="activity-chip" title=${`Open ${action} ${name}`} aria-label=${`Open ${action} ${name}`} @click=${() => { this.onJumpToActivity?.(item); }}>${indicator}<span class="activity-chip-name">${name}</span></button>`;
+  }
+
+  private renderTabRow() {
+    const active = this.activeTabSection();
+    const tabs: { section: NavigationSection; name: string; count: number }[] = [];
+    if (shouldShowMachinesSection(this.machines)) tabs.push({ section: "machines", name: "Machines", count: this.machines.length });
+    tabs.push({ section: "projects", name: "Projects", count: this.projects.length });
+    tabs.push({ section: "workspaces", name: "Workspaces", count: this.workspaces.length });
+    tabs.push({ section: "sessions", name: "Sessions", count: this.sessions.length });
+    return html`<nav class="section-tabs" aria-label="Sidebar sections">
+      ${tabs.map((tab) => {
+        const { kind, unread } = navigationSectionActivity(tab.section, this.sectionActivityOptions());
+        return html`<button
+          class=${`section-tab${tab.section === active ? " active" : ""}`}
+          aria-pressed=${String(tab.section === active)}
+          title=${unread ? `Unread in ${tab.name}` : `${tab.name}: ${String(tab.count)}`}
+          @click=${() => { this.onSelectTab?.(tab.section); }}
+        ><span class="section-tab-name">${tab.name}</span><small class="section-tab-count">${tab.count}</small>${renderActivityIndicator(kind, `${tab.name} active`, unread ? `Unread in ${tab.name}` : undefined)}</button>`;
+      })}
+    </nav>`;
+  }
+
+  private sectionActivityOptions(): NavigationSectionActivityOptions {
+    return {
+      machines: this.machines,
+      machineStatusSnapshots: this.machineStatusSnapshots,
+      snapshot: this.selectedMachineStatusSnapshot(),
+      projects: this.projects,
+      workspaces: this.workspaces,
+      sessions: this.sessions,
+      sessionStatuses: this.sessionStatuses,
+      sessionActivities: this.sessionActivities,
+      sendingPrompts: this.sendingPrompts,
+      unreadSessionIds: this.unreadSessionIds,
+    };
+  }
+
+  private renderStackedSections() {
+    return html`
+      ${this.compact && shouldShowMachinesSection(this.machines) ? this.renderMachineList() : null}
+      ${this.renderProjectList()}
+      ${this.renderWorkspaceList()}
+      ${this.renderSessionList()}
+    `;
+  }
+
+  /**
+   * Desktop tabs show exactly one list: the open tab's. The tab row already
+   * names every section, so the closed ones must not occupy panel height.
+   */
+  private renderActiveSection() {
+    switch (this.activeTabSection()) {
+      case "machines": return this.renderMachineList();
+      case "projects": return this.renderProjectList();
+      case "workspaces": return this.renderWorkspaceList();
+      case "sessions": return this.renderSessionList();
+    }
+  }
+
+  /**
+   * The desktop tab that is open. Machines is a tab only when a machine choice
+   * exists (the single-machine switcher is a header bubble, not a list).
+   */
+  private activeTabSection(): NavigationSection {
+    const collapsed: Record<NavigationSection, boolean> = {
+      machines: this.machinesCollapsed,
+      projects: this.projectsCollapsed,
+      workspaces: this.workspacesCollapsed,
+      sessions: this.sessionsCollapsed,
+    };
+    return visibleNavigationSections(this.machines).find((section) => !collapsed[section]) ?? "projects";
+  }
+
+  private renderMachineList() {
+    return html`
+      <machine-list
+        .machines=${this.machines}
+        .selected=${this.selectedMachine}
+        .statuses=${this.machineStatuses}
+        .statusSnapshots=${this.machineStatusSnapshots}
+        .collapsible=${this.collapsible}
+        .collapsed=${this.machinesCollapsed}
+        .onToggleCollapsed=${() => { this.onToggleMachines?.(); }}
+        .onSelect=${(machine: Machine) => this.onSelectMachine?.(machine)}
+        .onRemove=${(machine: Machine) => this.onRemoveMachine?.(machine)}
+        .onFocusNextSection=${() => { this.focusNextFrom("machines"); }}
+        .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
+      ></machine-list>
+    `;
+  }
+
+  private renderProjectList() {
+    return html`
       <project-list
         .projects=${this.projects}
         .selected=${this.selectedProject}
@@ -137,6 +360,11 @@ export class AppNavigationPanel extends LitElement {
         .onFocusNextSection=${() => { this.focusNextFrom("projects"); }}
         .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
       ></project-list>
+    `;
+  }
+
+  private renderWorkspaceList() {
+    return html`
       <workspace-list
         .workspaces=${this.workspaces}
         .selected=${this.selectedWorkspace}
@@ -153,6 +381,11 @@ export class AppNavigationPanel extends LitElement {
         .onFocusNextSection=${() => { this.focusNextFrom("workspaces"); }}
         .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
       ></workspace-list>
+    `;
+  }
+
+  private renderSessionList() {
+    return html`
       <session-list
         .sessions=${this.sessions}
         .statuses=${this.sessionStatuses}
@@ -187,17 +420,6 @@ export class AppNavigationPanel extends LitElement {
     `;
   }
 
-  /**
-   * Project and workspace rows always belong to the selected machine, resolved
-   * exactly as the rest of the app resolves it — including its local-machine
-   * default, which is the key snapshots arrive under before a machine has been
-   * selected. Diverging here would blank every row's indicator while a snapshot
-   * is in fact loaded.
-   */
-  private selectedMachineStatusSnapshot(): MachineStatusSnapshot | undefined {
-    return this.machineStatusSnapshots[selectedMachineId({ selectedMachine: this.selectedMachine })];
-  }
-
   private async focusNavigableSection(section: KeyboardNavigableSection | undefined): Promise<boolean> {
     if (section === undefined) return false;
     return await section.focusSelectedOrFirst();
@@ -224,6 +446,20 @@ export class AppNavigationPanel extends LitElement {
     machine-switcher { flex: 1 1 auto; min-width: 0; }
     :host([compact]) header { display: none; }
     .header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+    /* The activity row and the tab row are fixed chrome; the open list gets
+       every remaining pixel. */
+    .activity-row { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--pi-border-muted); }
+    .activity-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; border: 1px solid var(--pi-border-muted); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 4px 9px; font: inherit; cursor: pointer; }
+    .activity-chip:hover { background: var(--pi-surface-hover); }
+    .activity-chip .activity-indicator, .activity-chip .unread-ring { margin: 0; }
+    .activity-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .section-tabs { flex: 0 0 auto; display: flex; align-items: stretch; gap: 6px; padding: 0 12px 10px; }
+    .section-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); font: inherit; cursor: pointer; }
+    .section-tab:hover { background: var(--pi-surface-hover); }
+    .section-tab.active { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
+    .section-tab-name { font-weight: 600; }
+    .section-tab-count { color: var(--pi-muted); }
+    .section-tab .activity-indicator, .section-tab .unread-ring { margin: 0; }
     /* Expanded sections share the panel height equally, so collapsing one
        section distributes its space to every remaining section, not just the
        session list. Collapsed sections keep only their heading height. */
@@ -233,6 +469,9 @@ export class AppNavigationPanel extends LitElement {
     workspace-list[collapsed],
     session-list[collapsed] { flex: 0 0 auto; min-height: auto; overflow: hidden; }
     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
+    /* Tabbed desktop renders exactly one list, so its heading is the section's
+       own operation row, on its own line under the tab row. */
+    :host([tabbed]) machine-list, :host([tabbed]) project-list, :host([tabbed]) workspace-list, :host([tabbed]) session-list { border-bottom: 0; }
   `;
 }
 
@@ -254,4 +493,19 @@ function nextVisibleNavigationTarget(section: NavigationSection, machines: reado
 // machine the switcher is a static bubble, and compact mode has no list.
 function visibleNavigationSections(machines: readonly Machine[]): NavigationSection[] {
   return NAVIGATION_SECTION_ORDER.filter((section) => section !== "machines" || shouldShowMachinesSection(machines));
+}
+
+function flagsActivity(flagLists: readonly (StatusFlags | undefined)[]): NavigationSectionActivity {
+  const rolled = rollUpStatusFlags(flagLists.filter((flags): flags is StatusFlags => flags !== undefined));
+  return { kind: statusActivityKind(rolled), unread: hasStatusUnread(rolled) };
+}
+
+function sessionsActivity(options: NavigationSectionActivityOptions): NavigationSectionActivity {
+  let kind: ActivityIndicatorKind | undefined;
+  let unread = false;
+  for (const session of options.sessions) {
+    kind ??= sessionRowActivityKind(session, options.sessionStatuses[session.id], options.sessionActivities[session.id], options.sendingPrompts[session.id] === true);
+    if (!unread && sessionRowUnread(session, options.unreadSessionIds)) unread = true;
+  }
+  return { kind, unread };
 }

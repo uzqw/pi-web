@@ -4,6 +4,27 @@ export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "workspaces", "
 export type NavigationSection = (typeof NAVIGATION_SECTION_ORDER)[number];
 export type ExpandedNavigationSection = NavigationSection | "none" | undefined;
 
+export type NavigationSectionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+export interface NavigationSectionsControllerOptions {
+  storage?: NavigationSectionStorage;
+}
+
+/**
+ * Desktop shows one section at a time: the open tab keeps its list, and every
+ * other section collapses down to its heading so the open list gets the room.
+ */
+export function collapsedSectionsExcept(active: NavigationSection): NavigationSection[] {
+  return NAVIGATION_SECTION_ORDER.filter((section) => section !== active);
+}
+
+export const NAVIGATION_COLLAPSED_SECTIONS_STORAGE_KEY = "pi-web:navigation-collapsed-sections:v1";
+
+interface StoredCollapsedNavigationSections {
+  version: 1;
+  sections: unknown[];
+}
+
 export interface NavigationSelectionState {
   selectedProject: object | undefined;
   selectedWorkspace: object | undefined;
@@ -34,20 +55,15 @@ export function expandNavigationSection(expanded: ExpandedNavigationSection, sec
   return isMobileLayout ? section : expanded;
 }
 
-export function toggleCollapsedNavigationSection(collapsedSections: readonly NavigationSection[], section: NavigationSection): NavigationSection[] {
-  const collapsed = new Set(collapsedSections);
-  if (collapsed.has(section)) collapsed.delete(section);
-  else collapsed.add(section);
-  return orderedNavigationSections(collapsed);
-}
-
 export function nextNavigationSection(section: NavigationSection): NavigationSection | undefined {
   return NAVIGATION_SECTION_ORDER[NAVIGATION_SECTION_ORDER.indexOf(section) + 1];
 }
 
 export class NavigationSectionsController implements ReactiveController {
   private expanded: ExpandedNavigationSection;
-  private collapsedSections: readonly NavigationSection[] = [];
+  /** `undefined` until the user opens a tab: the selection decides which one is open. */
+  private collapsedSections: readonly NavigationSection[] | undefined;
+  private readonly storage: NavigationSectionStorage | undefined;
 
   hostConnected(): void {
     return;
@@ -57,20 +73,33 @@ export class NavigationSectionsController implements ReactiveController {
     private readonly host: ReactiveControllerHost,
     private readonly getState: () => NavigationSelectionState,
     private readonly isMobileLayout: () => boolean,
+    options: NavigationSectionsControllerOptions = {},
   ) {
     host.addController(this);
+    this.storage = options.storage ?? browserNavigationSectionStorage();
+    this.collapsedSections = readStoredCollapsedNavigationSections(this.storage);
   }
 
   expandedSection(): NavigationSection | undefined {
     return expandedNavigationSection(this.expanded, this.getState());
   }
 
+  /**
+   * The desktop tab that is open. Exactly one section is open on desktop, so
+   * this is the section a stored collapsed list leaves expanded; before the
+   * user has opened a tab it follows the current project/workspace selection.
+   */
+  activeSection(): NavigationSection {
+    const collapsed = this.effectiveCollapsedSections();
+    return NAVIGATION_SECTION_ORDER.find((section) => !collapsed.includes(section)) ?? defaultNavigationSection(this.getState());
+  }
+
   isCollapsed(section: NavigationSection): boolean {
+    if (!this.isMobileLayout()) return this.effectiveCollapsedSections().includes(section);
     return isNavigationSectionCollapsed(section, {
-      isMobileLayout: this.isMobileLayout(),
+      isMobileLayout: true,
       expanded: this.expanded,
       state: this.getState(),
-      collapsedSections: this.collapsedSections,
     });
   }
 
@@ -79,7 +108,9 @@ export class NavigationSectionsController implements ReactiveController {
       this.setExpanded(toggleNavigationSection(this.expanded, section, { isMobileLayout: true, state: this.getState() }));
       return;
     }
-    this.setCollapsedSections(toggleCollapsedNavigationSection(this.collapsedSections, section));
+    // Desktop tabs have no closed state to toggle back to: opening the open tab
+    // again leaves it open.
+    this.setCollapsedSections(collapsedSectionsExcept(section));
   }
 
   expand(section: NavigationSection): void {
@@ -87,7 +118,7 @@ export class NavigationSectionsController implements ReactiveController {
       this.setExpanded(expandNavigationSection(this.expanded, section, true));
       return;
     }
-    this.setCollapsedSections(this.collapsedSections.filter((collapsedSection) => collapsedSection !== section));
+    this.setCollapsedSections(collapsedSectionsExcept(section));
   }
 
   advanceAfterSelection(section: NavigationSection): void {
@@ -109,9 +140,41 @@ export class NavigationSectionsController implements ReactiveController {
   }
 
   private setCollapsedSections(collapsedSections: readonly NavigationSection[]): void {
-    if (navigationSectionListsEqual(this.collapsedSections, collapsedSections)) return;
+    if (this.collapsedSections !== undefined && navigationSectionListsEqual(this.collapsedSections, collapsedSections)) return;
     this.collapsedSections = collapsedSections;
+    writeStoredCollapsedNavigationSections(collapsedSections, this.storage);
     this.host.requestUpdate();
+  }
+
+  private effectiveCollapsedSections(): readonly NavigationSection[] {
+    return this.collapsedSections ?? collapsedSectionsExcept(defaultNavigationSection(this.getState()));
+  }
+}
+
+/**
+ * The sections collapsed on desktop, or `undefined` when the user has never
+ * opened a tab — the controller then derives them from the current selection.
+ */
+export function readStoredCollapsedNavigationSections(storage: NavigationSectionStorage | undefined = browserNavigationSectionStorage()): readonly NavigationSection[] | undefined {
+  if (storage === undefined) return undefined;
+  try {
+    const raw = storage.getItem(NAVIGATION_COLLAPSED_SECTIONS_STORAGE_KEY);
+    if (raw === null) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isStoredCollapsedNavigationSections(parsed)) return undefined;
+    return orderedNavigationSections(parsed.sections.filter(isNavigationSection));
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeStoredCollapsedNavigationSections(collapsedSections: readonly NavigationSection[], storage: NavigationSectionStorage | undefined = browserNavigationSectionStorage()): void {
+  if (storage === undefined) return;
+  try {
+    const stored: StoredCollapsedNavigationSections = { version: 1, sections: [...collapsedSections] };
+    storage.setItem(NAVIGATION_COLLAPSED_SECTIONS_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Ignore localStorage quota/privacy errors; the collapse still applies in memory for this tab.
   }
 }
 
@@ -122,4 +185,26 @@ function orderedNavigationSections(sections: Iterable<NavigationSection>): Navig
 
 function navigationSectionListsEqual(first: readonly NavigationSection[], second: readonly NavigationSection[]): boolean {
   return first.length === second.length && first.every((section, index) => section === second[index]);
+}
+
+function isStoredCollapsedNavigationSections(value: unknown): value is StoredCollapsedNavigationSections {
+  return isRecord(value) && value["version"] === 1 && Array.isArray(value["sections"]);
+}
+
+function isNavigationSection(value: unknown): value is NavigationSection {
+  if (typeof value !== "string") return false;
+  return NAVIGATION_SECTION_ORDER.some((section) => section === value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function browserNavigationSectionStorage(): NavigationSectionStorage | undefined {
+  try {
+    if (typeof window === "undefined") return undefined;
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
 }

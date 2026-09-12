@@ -1,4 +1,4 @@
-import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
+import { appendText, appendThinking, askUserRecordFromToolDetails, messageText, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
 import type { ChatLine, ToolExecutionPart } from "./components/shared";
 import { appendShellChunk, finalizeShellMessage, shellStartMessage } from "./shellMessages";
 import type { SessionUiEvent } from "./sessionSocket";
@@ -329,16 +329,25 @@ function sameMessageText(left: ChatLine, right: ChatLine): boolean {
   return messageText(left) === messageText(right);
 }
 
-function messageText(message: ChatLine): string {
-  return message.parts
-    .filter((part): part is Extract<ChatLine["parts"][number], { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("\n\n");
-}
-
 function appendNewMessage(messages: ChatLine[], rawMessage: unknown): ChatLine[] {
   const lines = normalizeMessage(rawMessage);
-  return lines.length === 0 ? messages : [...messages, ...lines];
+  if (lines.length === 0) return messages;
+  const echo = lines[0];
+  // A server echo of a prompt replaces the client's optimistic row for the
+  // same text instead of appending a duplicate of it.
+  if (echo?.role === "user") {
+    const matched = lastUserIndexWithText(messages, echo);
+    if (matched !== -1) return [...messages.slice(0, matched), echo, ...messages.slice(matched + 1), ...lines.slice(1)];
+  }
+  return [...messages, ...lines];
+}
+
+function lastUserIndexWithText(messages: ChatLine[], line: ChatLine): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const candidate = messages[i];
+    if (candidate?.role === "user" && sameMessageText(candidate, line)) return i;
+  }
+  return -1;
 }
 
 function appendLine(messages: ChatLine[], line: ChatLine): ChatLine[] {

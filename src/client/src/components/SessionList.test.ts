@@ -191,6 +191,17 @@ describe("sessionRowsForCurrentTree", () => {
       { id: "child", depth: 0, hasMissingParent: true },
     ]);
   });
+
+  it("renders one row when the same session id reaches the list twice", () => {
+    // A listing and a browser-side transient row can both carry one session, and
+    // selection matches by id, so a second row would also look selected.
+    const listed = session("3b593010");
+    const transientCopy = { ...listed, persisted: false };
+
+    expect(rowSummaries(sessionRowsForCurrentTree([listed, transientCopy]))).toEqual([
+      { id: "3b593010", depth: 0, hasMissingParent: false },
+    ]);
+  });
 });
 
 function rowSummaries(rows: ReturnType<typeof sessionRowsForCurrentTree>) {

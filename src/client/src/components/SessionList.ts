@@ -590,6 +590,22 @@ export function sessionRowUnread(session: SessionInfo, unreadSessionIds: Readonl
 }
 
 /**
+ * A listing is keyed by session id: the same session reaching the list twice
+ * (a listing producer and a browser-side transient row disagreeing) would
+ * render two rows for one session, and both would read as selected because
+ * selection matches by id. Keep the first occurrence, exactly as the
+ * session-tree model treats a duplicate projection.
+ */
+function sessionsWithUniqueIds(sessions: readonly SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>();
+  return sessions.filter((session) => {
+    if (seen.has(session.id)) return false;
+    seen.add(session.id);
+    return true;
+  });
+}
+
+/**
  * Index sessions by their normalized path. Parent links can arrive from a
  * different server producer than the listing itself (a `session.created`
  * broadcast carries the live runtime's file path), so keys are normalized to
@@ -619,10 +635,11 @@ export function sessionRowsForCurrentTree(sessions: SessionInfo[]): SessionRow[]
 }
 
 function sessionRows(sessions: SessionInfo[]): SessionRow[] {
-  const byPath = sessionsByNormalizedPath(sessions);
+  const uniqueSessions = sessionsWithUniqueIds(sessions);
+  const byPath = sessionsByNormalizedPath(uniqueSessions);
   const childrenByPath = new Map<string, SessionInfo[]>();
   const roots: SessionInfo[] = [];
-  for (const session of sessions) {
+  for (const session of uniqueSessions) {
     const parentPath = session.parentSessionPath;
     const parent = parentPath === undefined ? undefined : byPath.get(normalizeSessionPath(parentPath));
     if (parent === undefined) {

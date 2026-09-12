@@ -10,6 +10,34 @@ export function textMessage(role: ChatLine["role"], text: string): ChatLine {
   return { role, parts: [{ type: "text", text }] };
 }
 
+/** The plain text of a line: its text parts joined as the transcript renders them. */
+export function messageText(message: ChatLine): string {
+  return message.parts
+    .filter((part): part is Extract<ChatLine["parts"][number], { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
+/**
+ * The trailing client-side placeholder row for this prompt text, if any.
+ * Optimistic rows carry no server meta; a row the server echoed back does.
+ */
+export function lastUnacknowledgedUserMessageIndex(messages: ChatLine[], text: string): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "user" || message.meta !== undefined) continue;
+    if (messageText(message) === text) return i;
+  }
+  return -1;
+}
+
+/** Drop the trailing optimistic row for this text (no-op when it is already acknowledged). */
+export function retractUnacknowledgedUserMessage(messages: ChatLine[], text: string): ChatLine[] {
+  const index = lastUnacknowledgedUserMessageIndex(messages, text);
+  if (index === -1) return messages;
+  return [...messages.slice(0, index), ...messages.slice(index + 1)];
+}
+
 export function withMessageMeta(line: ChatLine, rawMessage: unknown): ChatLine {
   const meta = normalizeMeta(rawMessage);
   return meta === undefined ? line : { ...line, meta };

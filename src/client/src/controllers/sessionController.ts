@@ -2,7 +2,7 @@ import { api as defaultApi, type AskUserCloseResponse, type AskUserSubmission, t
 import type { AppState, ClosedExtensionDialog } from "../appState";
 import { BrowserErrorReporter, sessionBrowserErrorScope, workspaceBrowserErrorScope, type SessionBrowserErrorOwner } from "../browserErrors";
 import { forgetCachedNewSession, isCachedNewSessionInfo, markCachedNewSessionInfo, mergeCachedNewSessions, rememberCachedNewSession, stripCachedNewSessionMarker } from "../cachedNewSessions";
-import { textMessage } from "../chatMessages";
+import { lastUnacknowledgedUserMessageIndex, messageText, normalizeMessage, retractUnacknowledgedUserMessage, textMessage } from "../chatMessages";
 import { machineSessionKey } from "../machineKeys";
 import { clearDraft, moveDraft, saveDraft } from "../promptDraftStorage";
 import { clearStagedAttachments, moveStagedAttachments } from "../promptAttachmentStaging";
@@ -116,6 +116,8 @@ export class SessionController {
   private readonly onModelScopeChanged: SessionControllerDependencies["onModelScopeChanged"];
   private readonly browserErrors: BrowserErrorReporter;
   private selectionSeq = 0;
+  /** In-flight identical submissions (per session, kind, text, behavior, attachments). */
+  private readonly activeSendFingerprints = new Set<string>();
   private disposed = false;
   // Join-time stream watermark for the selected session. `seq` is the
   // `SessionEventHub` sequence captured together with the seeded partial by the
@@ -337,7 +339,26 @@ export class SessionController {
     // session even if the user navigates elsewhere mid-upload.
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
-    await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, folder, machineId, { markSending: hasAttachments }, errorOwner);
+    await this.deliverWithDedup(session.id, "prompt", trimmed, streamingBehavior, attachments, async () => {
+      await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, folder, machineId, { markSending: true, optimistic: !hasAttachments }, errorOwner);
+    });
+  }
+
+  /**
+   * Deduplicate an in-flight submission: an identical prompt/shell/command
+   * for the same session arriving before the previous one has settled (a
+   * double key press or a retry of a message that is already on the wire) is
+   * dropped instead of being delivered twice.
+   */
+  private async deliverWithDedup(sessionId: string, kind: "prompt" | "shell" | "command", text: string, behavior: string | undefined, attachments: PromptAttachment[] | undefined, deliver: () => Promise<void>): Promise<void> {
+    const fingerprint = `${sessionId}\u0000${kind}\u0000${text}\u0000${behavior ?? ""}\u0000${(attachments ?? []).map((attachment) => attachment.name).join(",")}`;
+    if (this.activeSendFingerprints.has(fingerprint)) return;
+    this.activeSendFingerprints.add(fingerprint);
+    try {
+      await deliver();
+    } finally {
+      this.activeSendFingerprints.delete(fingerprint);
+    }
   }
 
   private markSendingPrompt(sessionId: string, sending: boolean): void {
@@ -358,7 +379,9 @@ export class SessionController {
     }
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
-    await this.deliverShellToSession(session, text, machineId, { optimisticLine: true }, errorOwner);
+    await this.deliverWithDedup(session.id, "shell", text.trim(), undefined, undefined, async () => {
+      await this.deliverShellToSession(session, text, machineId, { optimisticLine: true }, errorOwner);
+    });
   }
 
   async runCommand(text: string) {
@@ -370,7 +393,9 @@ export class SessionController {
     }
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
-    await this.deliverCommandToSession(session, text, machineId, { applyResult: true }, errorOwner);
+    await this.deliverWithDedup(session.id, "command", text.trim(), undefined, undefined, async () => {
+      await this.deliverCommandToSession(session, text, machineId, { applyResult: true }, errorOwner);
+    });
   }
 
   private enqueuePendingSessionSend(session: ClientPendingStartSessionInfo, input: QueuedPendingSessionSendInput): void {
@@ -407,9 +432,10 @@ export class SessionController {
     return this.deliverCommandToSession(session, queued.text, machineId, { applyResult: true }, errorOwner);
   }
 
-  private async deliverPromptToSession(session: SessionInfo, text: string, streamingBehavior: "steer" | "followUp" | undefined, attachments: PromptAttachment[] | undefined, delivery: PromptAttachmentDelivery, folder: string | undefined, machineId: string, options: { markSending: boolean }, errorOwner: SessionBrowserErrorOwner): Promise<boolean> {
+  private async deliverPromptToSession(session: SessionInfo, text: string, streamingBehavior: "steer" | "followUp" | undefined, attachments: PromptAttachment[] | undefined, delivery: PromptAttachmentDelivery, folder: string | undefined, machineId: string, options: { markSending: boolean; optimistic?: boolean }, errorOwner: SessionBrowserErrorOwner): Promise<boolean> {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (options.markSending) this.markSendingPrompt(session.id, true);
+    if (options.optimistic === true) this.insertOptimisticPromptRow(session.id, text.trim());
     try {
       if (hasAttachments && delivery === "folder") {
         // The composer passes the workspace-effective folder it displayed, so
@@ -425,10 +451,48 @@ export class SessionController {
       this.markCachedNewSessionPersisted(session);
       return true;
     } catch (error) {
+      if (options.optimistic === true) await this.reconcileOptimisticPromptAfterFailure(session, text.trim(), machineId);
       this.reportSessionError(session, machineId, error, errorOwner);
       return false;
     } finally {
       if (options.markSending) this.markSendingPrompt(session.id, false);
+    }
+  }
+
+  /**
+   * Show the prompt in the transcript immediately so the composer's blank
+   * state cannot read as "nothing happened"; the server echo replaces the row.
+   */
+  private insertOptimisticPromptRow(sessionId: string, text: string): void {
+    if (this.getState().selectedSession?.id !== sessionId) return;
+    const messages = this.getState().messages;
+    // A prior attempt's row may still be pending (a retry raced the echo).
+    if (lastUnacknowledgedUserMessageIndex(messages, text) !== -1) return;
+    this.setState({ messages: [...messages, textMessage("user", text)] });
+  }
+
+  /**
+   * A prompt send failed. The failure is ambiguous over a flaky link: the
+   * prompt may have reached the daemon even though the response did not come
+   * back. Verify against the transcript tail: when the prompt actually landed,
+   * leave the optimistic row for the echo to replace; otherwise retract it so
+   * the transcript never shows a message that was not sent.
+   */
+  private async reconcileOptimisticPromptAfterFailure(session: SessionInfo, text: string, machineId: string): Promise<void> {
+    try {
+      const page = await this.api.messages(session, { limit: 6 }, machineId);
+      const delivered = page.messages.some((raw) => normalizeMessage(raw).some((line) => line.role === "user" && messageText(line) === text));
+      if (delivered) {
+        this.markCachedNewSessionPersisted(session);
+        return;
+      }
+    } catch {
+      // Verification itself failed: keep the row; the next authoritative
+      // transcript refresh decides.
+      return;
+    }
+    if (this.getState().selectedSession?.id === session.id) {
+      this.setState({ messages: retractUnacknowledgedUserMessage(this.getState().messages, text) });
     }
   }
 

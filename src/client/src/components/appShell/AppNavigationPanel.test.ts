@@ -26,12 +26,21 @@ describe("shouldShowMachinesSection", () => {
 });
 
 describe("header identity", () => {
-  it("shows the plain brand without an icon or address", async () => {
+  it("shows the plain brand without an icon or address when no project is selected", async () => {
     const panel = await mountHeaderPanel([machine("local")]);
 
     expect(panel.shadowRoot?.querySelector("header strong")?.textContent).toBe("PI WEB");
     expect(panel.shadowRoot?.querySelector(".brand-icon")).toBeNull();
     expect(panel.shadowRoot?.querySelector(".brand-domain")).toBeNull();
+  });
+
+  it("shows the selected project name in place of the brand", async () => {
+    const panel = await mountHeaderPanel([machine("local")]);
+    panel.projects = [project("project-1")];
+    panel.selectedProject = project("project-1");
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.querySelector("header strong")?.textContent).toBe("project-1");
   });
 
   it("keeps the machine switcher visible with a single machine", async () => {

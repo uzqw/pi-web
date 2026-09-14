@@ -2,13 +2,11 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { Project, Workspace } from "../api";
-import { loadPinnedIds } from "../pinnedList";
 import { ProjectList } from "./ProjectList";
 import { WorkspaceList } from "./WorkspaceList";
 
 afterEach(() => {
   document.body.replaceChildren();
-  localStorage.clear();
 });
 
 describe("project pinning", () => {
@@ -19,7 +17,7 @@ describe("project pinning", () => {
     await pinRow(list, 2); // b, now that c took the top slot
 
     expect(labels(list)).toEqual(["b", "c", "a"]);
-    expect(loadPinnedIds("pi-web:pinned-projects")).toEqual(["b", "c"]);
+    expect(list.pinnedIds).toEqual(["b", "c"]);
   });
 
   it("makes only pinned project rows draggable", async () => {
@@ -40,13 +38,14 @@ describe("workspace pinning", () => {
 
     await pinRow(list, 0); // c again
     expect(labels(list)).toEqual(["a", "b", "c"]);
-    expect(loadPinnedIds("pi-web:pinned-workspaces")).toEqual([]);
+    expect(list.pinnedIds).toEqual([]);
   });
 });
 
 async function renderProjects(ids: string[]): Promise<ProjectList> {
   const list = new ProjectList();
   list.projects = ids.map(project);
+  list.onChangePinnedIds = (next) => { list.pinnedIds = next; };
   document.body.append(list);
   await list.updateComplete;
   return list;
@@ -55,6 +54,7 @@ async function renderProjects(ids: string[]): Promise<ProjectList> {
 async function renderWorkspaces(ids: string[]): Promise<WorkspaceList> {
   const list = new WorkspaceList();
   list.workspaces = ids.map(workspace);
+  list.onChangePinnedIds = (next) => { list.pinnedIds = next; };
   document.body.append(list);
   await list.updateComplete;
   return list;

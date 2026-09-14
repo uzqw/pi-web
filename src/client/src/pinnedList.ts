@@ -5,47 +5,23 @@ import { css, html, type ReactiveController, type ReactiveControllerHost, type T
  * is significant: index 0 is the top row, so a newly pinned item sits above
  * every earlier pin ("later pins win"). Only pinned rows are draggable, and
  * unpinning returns the item to its natural position in the list.
+ *
+ * Pin ids are owned by the session daemon (browser-shared preferences); this
+ * controller only holds the current order and reports changes through
+ * {@link PinnedListController.onChange}.
  */
 
-/** Narrow storage seam so pin persistence is testable without a DOM. */
-export interface PinStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-function browserStorage(): PinStorage | undefined {
-  try {
-    return typeof localStorage === "undefined" ? undefined : localStorage;
-  } catch {
-    return undefined;
+/** Coerce a stored preference value into a clean, de-duplicated id order. */
+export function parsePinnedIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== "string" || candidate === "" || seen.has(candidate)) continue;
+    seen.add(candidate);
+    ids.push(candidate);
   }
-}
-
-export function loadPinnedIds(storageKey: string, storage = browserStorage()): string[] {
-  try {
-    const raw = storage?.getItem(storageKey);
-    if (raw === null || raw === undefined) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set<string>();
-    const ids: string[] = [];
-    for (const candidate of parsed) {
-      if (typeof candidate !== "string" || candidate === "" || seen.has(candidate)) continue;
-      seen.add(candidate);
-      ids.push(candidate);
-    }
-    return ids;
-  } catch {
-    return [];
-  }
-}
-
-export function savePinnedIds(storageKey: string, ids: readonly string[], storage = browserStorage()): void {
-  try {
-    storage?.setItem(storageKey, JSON.stringify(ids));
-  } catch {
-    // Ignore localStorage quota/privacy errors.
-  }
+  return ids;
 }
 
 /** Pin an item at the top, or remove it when it is already pinned. */
@@ -68,15 +44,21 @@ export class PinnedListController implements ReactiveController {
 
   constructor(
     private readonly host: ReactiveControllerHost,
-    private readonly storageKey: string,
-    private readonly storage: PinStorage | undefined = browserStorage(),
+    private readonly onChange: (ids: string[]) => void,
+    ids: readonly string[] = [],
   ) {
-    this.idsValue = loadPinnedIds(storageKey, storage);
+    this.idsValue = [...ids];
     host.addController(this);
   }
 
   hostConnected(): void {
     return;
+  }
+
+  /** Replace the order from an authoritative source (server snapshot or live event). */
+  setIds(ids: readonly string[]): void {
+    this.idsValue = [...ids];
+    this.host.requestUpdate();
   }
 
   get ids(): readonly string[] {
@@ -96,7 +78,7 @@ export class PinnedListController implements ReactiveController {
   }
 
   toggle(id: string): void {
-    this.setIds(togglePinnedId(this.idsValue, id));
+    this.updateIds(togglePinnedId(this.idsValue, id));
   }
 
   /**
@@ -145,7 +127,7 @@ export class PinnedListController implements ReactiveController {
       this.host.requestUpdate();
       return;
     }
-    this.setIds(movePinnedId(this.idsValue, fromId, id));
+    this.updateIds(movePinnedId(this.idsValue, fromId, id));
   }
 
   handleDragEnd(): void {
@@ -154,9 +136,9 @@ export class PinnedListController implements ReactiveController {
     this.host.requestUpdate();
   }
 
-  private setIds(ids: string[]): void {
+  private updateIds(ids: string[]): void {
     this.idsValue = ids;
-    savePinnedIds(this.storageKey, ids, this.storage);
+    this.onChange(ids);
     this.host.requestUpdate();
   }
 }

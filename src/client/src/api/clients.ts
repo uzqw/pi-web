@@ -29,6 +29,7 @@ import {
   parsePiPackagesResponse,
   parsePiWebConfigResponse,
   parsePiWebPluginsResponse,
+  parsePreferencesSnapshot,
   parsePiWebRuntimeResponse,
   parsePiWebStatusResponse,
   parseProject,
@@ -118,6 +119,19 @@ function pluginsPath(machineId?: string): string {
 export const configApi = {
   config: (machineId?: string) => request(configPath(machineId), parsePiWebConfigResponse),
   saveConfig: (config: PiWebConfigValues, machineId?: string) => request(configPath(machineId), parsePiWebConfigResponse, { method: "PUT", body: JSON.stringify({ config }) }),
+};
+
+function preferencesPath(machineId?: string): string {
+  return machineId === undefined ? "api/preferences" : `${machinePrefix(machineId)}/preferences`;
+}
+
+export const preferencesApi = {
+  preferences: (machineId?: string) => request(preferencesPath(machineId), parsePreferencesSnapshot),
+  savePreference: (key: string, value: unknown, machineId?: string) => request(
+    `${preferencesPath(machineId)}/${encodeURIComponent(key)}`,
+    parsePreferencesSnapshot,
+    { method: "PUT", body: JSON.stringify({ value }) },
+  ),
 };
 
 export const pluginsApi = {
@@ -399,6 +413,7 @@ export const api = {
   ...machinesApi,
   ...noticesApi,
   ...configApi,
+  ...preferencesApi,
   ...pluginsApi,
   ...piPackagesApi,
   ...projectsApi,

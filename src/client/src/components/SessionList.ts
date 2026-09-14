@@ -66,9 +66,11 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onReload?: (session: SessionInfo) => void;
   @property({ attribute: false }) onCleanup?: () => void;
 
+  @property({ attribute: false }) pinnedIds: readonly string[] = [];
+  @property({ attribute: false }) onChangePinnedIds?: (ids: string[]) => void;
   @state() private openMenuSessionId: string | undefined;
   @state() private menuStyle = "";
-  private readonly pins = new PinnedListController(this, "pi-web:pinned-sessions");
+  private readonly pins = new PinnedListController(this, (ids) => { this.onChangePinnedIds?.(ids); });
   @state() private archivedExpanded = false;
   @state() private selectionScopes: ReadonlySet<SessionSelectionScope> = new Set();
   @state() private selectedSessionIds: ReadonlySet<string> = new Set();
@@ -89,6 +91,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (changed.has("pinnedIds")) this.pins.setIds(this.pinnedIds);
     if (changed.has("sessions")) {
       if (this.openMenuSessionId !== undefined && !this.sessions.some((session) => session.id === this.openMenuSessionId)) this.openMenuSessionId = undefined;
       if (!this.sessions.some((session) => session.archived === true)) this.archivedExpanded = false;

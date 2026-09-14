@@ -113,6 +113,12 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) sendingPrompts: Record<string, true> = {};
   @property({ attribute: false }) unreadSessionIds: ReadonlySet<string> = new Set();
   @property({ attribute: false }) deletingWorkspaceIds: string[] = [];
+  @property({ attribute: false }) pinnedProjectIds: readonly string[] = [];
+  @property({ attribute: false }) pinnedWorkspaceIds: readonly string[] = [];
+  @property({ attribute: false }) pinnedSessionIds: readonly string[] = [];
+  @property({ attribute: false }) onChangePinnedProjects?: (ids: string[]) => void;
+  @property({ attribute: false }) onChangePinnedWorkspaces?: (ids: string[]) => void;
+  @property({ attribute: false }) onChangePinnedSessions?: (ids: string[]) => void;
   @property({ attribute: false }) workspaceLabelItems: (workspace: Workspace) => WorkspaceLabelItem[] = () => [];
   @property({ attribute: false }) refreshControl: unknown;
   @property({ type: Boolean, reflect: true }) collapsible = false;
@@ -333,6 +339,8 @@ export class AppNavigationPanel extends LitElement {
         .projects=${this.projects}
         .selected=${this.selectedProject}
         .statusSnapshot=${this.selectedMachineStatusSnapshot()}
+        .pinnedIds=${this.pinnedProjectIds}
+        .onChangePinnedIds=${(ids: string[]) => this.onChangePinnedProjects?.(ids)}
         .collapsible=${this.collapsible}
         .collapsed=${this.projectsCollapsed}
         .onToggleCollapsed=${() => { this.onToggleProjects?.(); }}
@@ -353,6 +361,8 @@ export class AppNavigationPanel extends LitElement {
         .machineId=${this.selectedMachine?.id ?? "local"}
         .statusSnapshot=${this.selectedMachineStatusSnapshot()}
         .deletingWorkspaceIds=${this.deletingWorkspaceIds}
+        .pinnedIds=${this.pinnedWorkspaceIds}
+        .onChangePinnedIds=${(ids: string[]) => this.onChangePinnedWorkspaces?.(ids)}
         .collapsible=${this.collapsible}
         .collapsed=${this.workspacesCollapsed}
         .workspaceLabelItems=${this.workspaceLabelItems}
@@ -377,6 +387,8 @@ export class AppNavigationPanel extends LitElement {
         .selected=${this.selectedSession}
         .startingCount=${this.startingSessionCount}
         .canStart=${this.canStartSession}
+        .pinnedIds=${this.pinnedSessionIds}
+        .onChangePinnedIds=${(ids: string[]) => this.onChangePinnedSessions?.(ids)}
         .collapsible=${this.collapsible}
         .collapsed=${this.sessionsCollapsed}
         .onToggleCollapsed=${() => { this.onToggleSessions?.(); }}

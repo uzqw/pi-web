@@ -1,6 +1,6 @@
 import { LitElement, html, type TemplateResult } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceAttachmentsFolder, effectiveWorkspaceUploadFolder, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveAttachmentsFolder, workspaceEffectiveUploadFolder, type AskUserSubmission, type CommandOption, type ExtensionDialogAnswer, type Machine, type MachineHealth, type PiWebConfigValues, type PiWebShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelScopeMode, type SessionTreeForkResult, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceAttachmentsFolder, effectiveWorkspaceUploadFolder, preferencesApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveAttachmentsFolder, workspaceEffectiveUploadFolder, type AskUserSubmission, type CommandOption, type ExtensionDialogAnswer, type Machine, type MachineHealth, type PiWebConfigValues, type PiWebShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelScopeMode, type SessionTreeForkResult, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import { initialAppState, type AppState, type ModelDialogOrigin } from "../appState";
 import { browserErrorContext, browserErrorScopeKey, BrowserErrorReporter, clearBrowserError, machineBrowserErrorScope, visibleBrowserErrors, workspaceBrowserErrorScope, type BrowserError, type BrowserErrorScope } from "../browserErrors";
@@ -25,7 +25,15 @@ import { LocalStorageWorkspaceSelectionMemory } from "../controllers/workspaceSe
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
 import { machineSessionKey } from "../machineKeys";
-import { loadModelPresets, presetFromStatus, saveModelPresets, type ModelPreset } from "../modelPresets";
+import { parseModelPresets, presetFromStatus, type ModelPreset } from "../modelPresets";
+import { parsePinnedIds } from "../pinnedList";
+import {
+  MODEL_PRESETS_PREFERENCE_KEY,
+  PINNED_PROJECTS_PREFERENCE_KEY,
+  PINNED_SESSIONS_PREFERENCE_KEY,
+  PINNED_WORKSPACES_PREFERENCE_KEY,
+  type PreferencesSnapshot,
+} from "../../../shared/preferences";
 import { HttpRequestError } from "../api/http";
 import { sessionCleanupRequestKey } from "../sessionCleanupUi";
 import { selectedNotificationView } from "../sessionNotifications";
@@ -363,14 +371,13 @@ export class PiWebApp extends LitElement {
     window.addEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
     this.systemLightThemeMedia?.addEventListener("change", this.onSystemLightThemeChange);
     this.applyPreferredTheme(false);
-    const modelPresets = loadModelPresets();
-    if (modelPresets.length > 0) this.setState({ modelPresets });
     this.connectRealtime();
     this.syncSessionUnreadMachines();
     this.piWebStatusTimer = window.setInterval(() => { this.schedulePiWebStatusRefresh(); }, PI_WEB_STATUS_REFRESH_MS);
     this.scheduleSelectedSessionRefresh();
     this.scheduleSessionListingRefresh();
     void this.loadClientConfig();
+    void this.loadPreferences();
     void this.ensureGatewayPluginsLoaded();
     void this.loadProjectsAndRestoreRoute().finally(() => { this.schedulePiWebStatusRefresh(); });
   }
@@ -1024,6 +1031,7 @@ export class PiWebApp extends LitElement {
       () => {
         void this.sessionUnread.refresh(machineId);
         void this.serverNotices.refresh(machineId);
+        void this.loadPreferences();
         const workspace = this.state.selectedWorkspace;
         if (workspace !== undefined) void this.refreshActiveTerminals(workspace);
       },
@@ -1072,6 +1080,7 @@ export class PiWebApp extends LitElement {
     if (event.type === "sessions.unread") this.sessionUnread.applyEvent(machineId, event);
     else if (event.type === "notices.updated") this.serverNotices.applyEvent(machineId, event);
     else if (event.type === "machine.status") this.machineStatus.apply(machineId, event.status);
+    else if (event.type === "preferences.updated") this.applyPreferenceEvent(event);
     else if (isTerminalEvent(event)) {
       this.applyTerminalEvent(event);
       if (event.type === "terminal.exited") void this.refreshWorkspaceDeletionRuns();
@@ -1126,6 +1135,7 @@ export class PiWebApp extends LitElement {
     this.activeTerminalIds.clear();
     this.sessionCleanupDialog = undefined;
     this.setState({ piWebStatus: undefined });
+    void this.loadPreferences();
     void this.loadPluginsForSelectedMachine();
   }
 
@@ -1317,6 +1327,12 @@ export class PiWebApp extends LitElement {
         .selectedSession=${this.state.selectedSession}
         .startingSessionCount=${this.state.startingSessionCount}
         .canStartSession=${!!this.state.selectedWorkspace}
+        .pinnedProjectIds=${this.state.pinnedProjectIds}
+        .pinnedWorkspaceIds=${this.state.pinnedWorkspaceIds}
+        .pinnedSessionIds=${this.state.pinnedSessionIds}
+        .onChangePinnedProjects=${(ids: string[]) => { this.savePreference(PINNED_PROJECTS_PREFERENCE_KEY, ids); }}
+        .onChangePinnedWorkspaces=${(ids: string[]) => { this.savePreference(PINNED_WORKSPACES_PREFERENCE_KEY, ids); }}
+        .onChangePinnedSessions=${(ids: string[]) => { this.savePreference(PINNED_SESSIONS_PREFERENCE_KEY, ids); }}
         .collapsible=${true}
         .compact=${this.appShell.isMobileNavigationLayout}
         .tabbed=${!this.appShell.isMobileNavigationLayout}
@@ -2137,15 +2153,50 @@ export class PiWebApp extends LitElement {
   private addModelPreset() {
     const preset = presetFromStatus(this.state.status);
     if (preset === undefined) return;
-    const presets = [...this.state.modelPresets, preset];
-    saveModelPresets(presets);
-    this.setState({ modelPresets: presets });
+    this.setState({ modelPresets: [...this.state.modelPresets, preset] });
+    this.savePreference(MODEL_PRESETS_PREFERENCE_KEY, this.state.modelPresets);
   }
 
   private removeModelPreset(preset: ModelPreset) {
-    const presets = this.state.modelPresets.filter((candidate) => candidate !== preset);
-    saveModelPresets(presets);
-    this.setState({ modelPresets: presets });
+    this.setState({ modelPresets: this.state.modelPresets.filter((candidate) => candidate !== preset) });
+    this.savePreference(MODEL_PRESETS_PREFERENCE_KEY, this.state.modelPresets);
+  }
+
+  /**
+   * Persist one preference on the selected machine's daemon. The daemon owns
+   * the value and broadcasts it back, so this is fire-and-forget: a failure
+   * leaves the local optimistic value until the next load or event corrects it.
+   */
+  private savePreference(key: string, value: unknown): void {
+    const machineId = selectedMachineId(this.state);
+    void preferencesApi.savePreference(key, value, machineId).catch((error: unknown) => {
+      console.warn(`Failed to save PI WEB preference ${key}`, error);
+    });
+  }
+
+  private applyPreferences(snapshot: PreferencesSnapshot): void {
+    this.setState({
+      pinnedProjectIds: parsePinnedIds(snapshot[PINNED_PROJECTS_PREFERENCE_KEY]),
+      pinnedWorkspaceIds: parsePinnedIds(snapshot[PINNED_WORKSPACES_PREFERENCE_KEY]),
+      pinnedSessionIds: parsePinnedIds(snapshot[PINNED_SESSIONS_PREFERENCE_KEY]),
+      modelPresets: parseModelPresets(snapshot[MODEL_PRESETS_PREFERENCE_KEY]),
+    });
+  }
+
+  /** Apply one live preference change without disturbing the other keys. */
+  private applyPreferenceEvent(event: { key: string; value: unknown }): void {
+    if (event.key === PINNED_PROJECTS_PREFERENCE_KEY) this.setState({ pinnedProjectIds: parsePinnedIds(event.value) });
+    else if (event.key === PINNED_WORKSPACES_PREFERENCE_KEY) this.setState({ pinnedWorkspaceIds: parsePinnedIds(event.value) });
+    else if (event.key === PINNED_SESSIONS_PREFERENCE_KEY) this.setState({ pinnedSessionIds: parsePinnedIds(event.value) });
+    else if (event.key === MODEL_PRESETS_PREFERENCE_KEY) this.setState({ modelPresets: parseModelPresets(event.value) });
+  }
+
+  private async loadPreferences(): Promise<void> {
+    try {
+      this.applyPreferences(await preferencesApi.preferences(selectedMachineId(this.state)));
+    } catch (error) {
+      console.warn("Failed to load PI WEB preferences", error);
+    }
   }
 
   private openThemeDialog() {

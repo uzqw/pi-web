@@ -39,9 +39,11 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   @property({ attribute: false }) onFocusPreviousSection?: () => void | Promise<void>;
   @property({ attribute: false }) onFocusNextSection?: () => void | Promise<void>;
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
+  @property({ attribute: false }) pinnedIds: readonly string[] = [];
+  @property({ attribute: false }) onChangePinnedIds?: (ids: string[]) => void;
   @state() private openMenuWorkspaceId: string | undefined;
   @state() private menuStyle = "";
-  private readonly pins = new PinnedListController(this, "pi-web:pinned-workspaces");
+  private readonly pins = new PinnedListController(this, (ids) => { this.onChangePinnedIds?.(ids); });
   @state() private copiedDetailKey: string | undefined;
   @state() private trustByWorkspaceId: Record<string, WorkspaceTrustState> = {};
 
@@ -61,6 +63,7 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (changed.has("pinnedIds")) this.pins.setIds(this.pinnedIds);
     if (changed.has("workspaces") && this.openMenuWorkspaceId !== undefined && !this.workspaces.some((workspace) => workspace.id === this.openMenuWorkspaceId)) this.openMenuWorkspaceId = undefined;
     if (changed.has("collapsed") && this.collapsed) this.openMenuWorkspaceId = undefined;
     if (this.shouldRevealSelectedRow(changed)) this.scrollSelectedIntoView();

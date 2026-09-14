@@ -23,9 +23,11 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onFocusPreviousSection?: () => void | Promise<void>;
   @property({ attribute: false }) onFocusNextSection?: () => void | Promise<void>;
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
+  @property({ attribute: false }) pinnedIds: readonly string[] = [];
+  @property({ attribute: false }) onChangePinnedIds?: (ids: string[]) => void;
   @state() private openMenuProjectId: string | undefined;
   @state() private menuStyle = "";
-  private readonly pins = new PinnedListController(this, "pi-web:pinned-projects");
+  private readonly pins = new PinnedListController(this, (ids) => { this.onChangePinnedIds?.(ids); });
   private readonly onDocumentClick = (event: MouseEvent) => {
     if (event.composedPath().includes(this)) return;
     this.openMenuProjectId = undefined;
@@ -42,6 +44,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (changed.has("pinnedIds")) this.pins.setIds(this.pinnedIds);
     if (changed.has("projects") && this.openMenuProjectId !== undefined && !this.projects.some((project) => project.id === this.openMenuProjectId)) this.openMenuProjectId = undefined;
     if (changed.has("collapsed") && this.collapsed) this.openMenuProjectId = undefined;
   }

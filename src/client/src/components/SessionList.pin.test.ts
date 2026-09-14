@@ -2,7 +2,6 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionInfo } from "../api";
-import { loadPinnedIds, savePinnedIds } from "../pinnedList";
 import { SessionList } from "./SessionList";
 
 afterEach(() => {
@@ -25,7 +24,7 @@ describe("session pinning", () => {
     await pinRow(list, 2); // b, now that c took the top slot
 
     expect(labels(list)).toEqual(["b", "c", "a"]);
-    expect(loadPinnedIds("pi-web:pinned-sessions")).toEqual(["b", "c"]);
+    expect(list.pinnedIds).toEqual(["b", "c"]);
   });
 
   it("unpins from the same button and drops the stored pin", async () => {
@@ -36,14 +35,12 @@ describe("session pinning", () => {
     await pinRow(list, 0); // a again
 
     expect(labels(list)).toEqual(["b", "a"]);
-    expect(loadPinnedIds("pi-web:pinned-sessions")).toEqual([]);
+    expect(list.pinnedIds).toEqual([]);
     expect(row(list, 1).querySelector<HTMLButtonElement>(".action-pin-toggle")?.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("restores a stored pin order on first render", async () => {
-    savePinnedIds("pi-web:pinned-sessions", ["b", "a"]);
-
-    const list = await renderList([session("a"), session("b"), session("c")]);
+    const list = await renderList([session("a"), session("b"), session("c")], ["b", "a"]);
 
     expect(labels(list)).toEqual(["b", "a", "c"]);
   });
@@ -66,9 +63,11 @@ describe("session pinning", () => {
   });
 });
 
-async function renderList(sessions: SessionInfo[]): Promise<SessionList> {
+async function renderList(sessions: SessionInfo[], pinnedIds: string[] = []): Promise<SessionList> {
   const list = new SessionList();
   list.sessions = sessions;
+  list.pinnedIds = pinnedIds;
+  list.onChangePinnedIds = (ids) => { list.pinnedIds = ids; };
   document.body.append(list);
   await list.updateComplete;
   return list;

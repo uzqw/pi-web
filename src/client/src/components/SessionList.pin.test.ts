@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionInfo } from "../api";
-import { loadPinnedSessionIds, savePinnedSessionIds } from "../pinnedSessions";
+import { loadPinnedIds, savePinnedIds } from "../pinnedList";
 import { SessionList } from "./SessionList";
 
 afterEach(() => {
@@ -25,7 +25,7 @@ describe("session pinning", () => {
     await pinRow(list, 2); // b, now that c took the top slot
 
     expect(labels(list)).toEqual(["b", "c", "a"]);
-    expect(loadPinnedSessionIds()).toEqual(["b", "c"]);
+    expect(loadPinnedIds("pi-web:pinned-sessions")).toEqual(["b", "c"]);
   });
 
   it("unpins from the same button and drops the stored pin", async () => {
@@ -36,12 +36,12 @@ describe("session pinning", () => {
     await pinRow(list, 0); // a again
 
     expect(labels(list)).toEqual(["b", "a"]);
-    expect(loadPinnedSessionIds()).toEqual([]);
+    expect(loadPinnedIds("pi-web:pinned-sessions")).toEqual([]);
     expect(row(list, 1).querySelector<HTMLButtonElement>(".action-pin-toggle")?.getAttribute("aria-pressed")).toBe("false");
   });
 
   it("restores a stored pin order on first render", async () => {
-    savePinnedSessionIds(["b", "a"]);
+    savePinnedIds("pi-web:pinned-sessions", ["b", "a"]);
 
     const list = await renderList([session("a"), session("b"), session("c")]);
 

@@ -541,6 +541,12 @@ export const promptEditorStyles = css`
   .stop-button:not(:disabled) { color: var(--pi-danger); }
   .select-thinking .prompt-thinking-gauge .gauge-bar { fill: currentColor; stroke: none; opacity: .28; }
   .select-thinking .prompt-thinking-gauge .gauge-bar-active { opacity: 1; }
+  .model-presets { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+  .model-presets::-webkit-scrollbar { display: none; }
+  .model-preset { flex: 0 0 auto; min-width: 26px; padding: 4px 6px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); font-size: 11px; line-height: 1.2; text-align: center; }
+  .model-preset:hover { color: var(--pi-text); }
+  .model-preset.current { border-color: var(--pi-accent); color: var(--pi-text); background: var(--pi-selection-bg); }
+  .model-preset-add { color: var(--pi-muted); border-style: dashed; }
   .editor-attach { position: absolute; right: 8px; bottom: 8px; z-index: 2; width: 30px; height: 30px; }
   .editor-attach .prompt-action-icon { width: 16px; height: 16px; }
   textarea, .markdown-editor .cm-editor { box-sizing: border-box; width: 100%; min-height: 54px; max-height: 220px; resize: none; overflow: hidden; border-radius: 8px; border: 1px solid var(--pi-border); background: var(--pi-bg); color: var(--pi-text); font: var(--pi-control-font-size, 16px)/1.4 var(--pi-control-font-family, system-ui, sans-serif); }

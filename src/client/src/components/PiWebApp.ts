@@ -25,6 +25,7 @@ import { LocalStorageWorkspaceSelectionMemory } from "../controllers/workspaceSe
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
 import { machineSessionKey } from "../machineKeys";
+import { loadModelPresets, presetFromStatus, saveModelPresets, type ModelPreset } from "../modelPresets";
 import { HttpRequestError } from "../api/http";
 import { sessionCleanupRequestKey } from "../sessionCleanupUi";
 import { selectedNotificationView } from "../sessionNotifications";
@@ -362,6 +363,8 @@ export class PiWebApp extends LitElement {
     window.addEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
     this.systemLightThemeMedia?.addEventListener("change", this.onSystemLightThemeChange);
     this.applyPreferredTheme(false);
+    const modelPresets = loadModelPresets();
+    if (modelPresets.length > 0) this.setState({ modelPresets });
     this.connectRealtime();
     this.syncSessionUnreadMachines();
     this.piWebStatusTimer = window.setInterval(() => { this.schedulePiWebStatusRefresh(); }, PI_WEB_STATUS_REFRESH_MS);
@@ -2126,6 +2129,25 @@ export class PiWebApp extends LitElement {
     await this.sessions.setModel(value.slice(0, slash), value.slice(slash + 1));
   }
 
+  private async applyModelPreset(preset: ModelPreset) {
+    await this.sessions.setModel(preset.provider, preset.id);
+    if (preset.thinkingLevel !== undefined) await this.sessions.setThinkingLevel(preset.thinkingLevel);
+  }
+
+  private addModelPreset() {
+    const preset = presetFromStatus(this.state.status);
+    if (preset === undefined) return;
+    const presets = [...this.state.modelPresets, preset];
+    saveModelPresets(presets);
+    this.setState({ modelPresets: presets });
+  }
+
+  private removeModelPreset(preset: ModelPreset) {
+    const presets = this.state.modelPresets.filter((candidate) => candidate !== preset);
+    saveModelPresets(presets);
+    this.setState({ modelPresets: presets });
+  }
+
   private openThemeDialog() {
     const themes = this.plugins.getThemes();
     const resolution = this.resolveCurrentThemePreference(themes);
@@ -2342,6 +2364,18 @@ export class PiWebApp extends LitElement {
     void this.openThinkingDialog();
   };
 
+  private readonly handlePickModelPreset = (preset: ModelPreset): void => {
+    void this.applyModelPreset(preset);
+  };
+
+  private readonly handleAddModelPreset = (): void => {
+    this.addModelPreset();
+  };
+
+  private readonly handleRemoveModelPreset = (preset: ModelPreset): void => {
+    this.removeModelPreset(preset);
+  };
+
   private renderChatView(state: AppState, session: SessionInfo) {
     return html`
       <chat-view .sessionId=${session.id} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .activity=${state.activity} .pendingAsk=${state.pendingAsk} .pendingDialogs=${state.pendingDialogs} .closedDialogs=${state.closedDialogs} .onAnswerDialog=${this.handleAnswerDialog} .onCancelDialog=${this.handleCancelDialog} .onDismissClosedDialog=${this.handleDismissClosedDialog} .askDraftSessionId=${machineSessionKey(selectedMachineId(state), session.id)} .onSubmitAsk=${this.handleSubmitAsk} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .onClearServerQueue=${this.handleClearServerQueue} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
@@ -2446,7 +2480,7 @@ export class PiWebApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
-            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking}></prompt-editor>
+            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .modelPresets=${state.modelPresets} .onPickModelPreset=${this.handlePickModelPreset} .onAddModelPreset=${this.handleAddModelPreset} .onRemoveModelPreset=${this.handleRemoveModelPreset}></prompt-editor>
             ${this.renderStatusBar(state)}
             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
             ${state.modelDialog !== undefined ? html`<model-picker title=${state.modelDialog.title} .options=${state.modelDialog.options} .catalog=${state.modelDialog.catalog} .selectedValue=${state.modelDialog.selectedValue} .onPick=${(value: string) => { void this.pickModel(value); }} .onToggleEnabled=${this.handleToggleModelEnabled} .onSetScope=${this.handleSetModelScope} .onCancel=${() => { this.setState({ modelDialog: undefined }); }}></model-picker>` : null}

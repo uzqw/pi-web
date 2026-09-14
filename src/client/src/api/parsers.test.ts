@@ -986,6 +986,27 @@ describe("API parsers", () => {
     expect(() => parseSessionTreeForkResult({ session })).toThrow("cancelled");
   });
 
+  it("parses a runtime replacement announcement for the replaced identity", () => {
+    const session = {
+      id: "replacement-session",
+      path: "/sessions/replacement-session.jsonl",
+      cwd: "/repo",
+      created: "2026-01-01T00:00:00.000Z",
+      modified: "2026-01-01T00:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      parentSessionPath: "/sessions/replaced-session.jsonl",
+    };
+
+    expect(parseRealtimeStreamEvent({ type: "session.replaced", previousSessionId: "replaced-session", session })).toEqual({
+      type: "session.replaced",
+      previousSessionId: "replaced-session",
+      session,
+    });
+    expect(() => parseRealtimeStreamEvent({ type: "session.replaced", session })).toThrow("previousSessionId");
+    expect(() => parseRealtimeStreamEvent({ type: "session.replaced", previousSessionId: "replaced-session" })).toThrow("Expected object response");
+  });
+
   it("strictly parses selected notification snapshots and realtime events", () => {
     const inbox = notificationInboxWire();
 

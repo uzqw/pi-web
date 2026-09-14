@@ -164,6 +164,7 @@ export class SessionController {
     else if (event.type === "activity.update") this.queueActivityUpdate(event.activity);
     else if (event.type === "session.created") this.applyCreatedSession(event.session);
     else if (event.type === "session.name") this.applySessionName(event.sessionId, event.name);
+    else if (event.type === "session.replaced") this.applyReplacedSession(event);
     else if (event.type === "models.changed") this.onModelScopeChanged?.(event.revision);
     else if (event.type === "session.startup") this.queueStartupProgress(event);
   }
@@ -1713,6 +1714,22 @@ export class SessionController {
       sessions: this.getState().sessions.map(rename),
       selectedSession: selectedSession === undefined ? undefined : rename(selectedSession),
     });
+  }
+
+  /**
+   * Follow a daemon-side runtime replacement: an extension called `newSession`, `fork`, or
+   * `switchSession` behind the identity this browser is showing.
+   *
+   * Only the session actually being shown is followed; a replacement behind any other
+   * session belongs to whoever is looking at that one. The replaced transcript is dropped
+   * because its runtime is gone and any cached projection of it is now unverifiable.
+   */
+  private applyReplacedSession(event: Extract<GlobalSessionEvent, { type: "session.replaced" }>) {
+    const state = this.getState();
+    if (state.selectedSession?.id !== event.previousSessionId) return;
+    this.transcripts.discard(this.sessionCacheKey(event.previousSessionId));
+    this.setState({ sessions: [event.session, ...state.sessions.filter((candidate) => candidate.id !== event.session.id)] });
+    void this.selectSession(event.session);
   }
 
   private applyEvent(event: SessionUiEvent) {

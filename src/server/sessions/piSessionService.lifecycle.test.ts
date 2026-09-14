@@ -1,11 +1,12 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
 import { PiSessionService, type PiAgentSession, type PiSessionRuntime, type ResolvedSessionFile } from "./piSessionService.js";
 import { SessionNotificationStore } from "./sessionNotificationStore.js";
-import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime, type RuntimeCreator, type SessionGateway } from "./piSessionService.testSupport.js";
+import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModel, testModelRuntime, type RuntimeCreator, type SessionGateway } from "./piSessionService.testSupport.js";
 
 const TEST_AGENT_DIR = "/tmp/pi-web-test-agent";
 
@@ -1005,6 +1006,130 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     const revision = service.notificationInbox(sessionRef("session-2")).summary.inboxRevision;
     staleNotify("stale", "error");
     expect(service.notificationInbox(sessionRef("session-2")).summary.inboxRevision).toBe(revision);
+
+    await service.dispose();
+  });
+
+  it("gives extensions the runtime's session replacement actions", async () => {
+    const fake = fakeRuntime("session-1");
+    const newSession = vi.fn(() => Promise.resolve({ cancelled: false }));
+    const switchSession = vi.fn(() => Promise.resolve({ cancelled: false }));
+    const fork = vi.fn(() => Promise.resolve({ cancelled: false }));
+    fake.runtime.newSession = newSession;
+    fake.runtime.switchSession = switchSession;
+    fake.runtime.fork = fork;
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+
+    const actions = fake.calls.bindExtensions.at(-1)?.commandContextActions;
+    if (actions === undefined) throw new Error("expected command context actions on the extension bindings");
+    // Extensions reach session replacement through the runtime host, never through the
+    // SDK's no-op defaults, so the active map, notifications, and the browser follow-up
+    // all stay owned by PI WEB.
+    await expect(actions.newSession({ parentSession: "/sessions/parent.jsonl" })).resolves.toEqual({ cancelled: false });
+    expect(newSession).toHaveBeenCalledWith({
+      parentSession: "/sessions/parent.jsonl",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- `expect.any` yields `any` against the loosely typed runtime options.
+      withSession: expect.any(Function),
+    });
+    await expect(actions.switchSession("/sessions/other.jsonl")).resolves.toEqual({ cancelled: false });
+    expect(switchSession).toHaveBeenCalledWith("/sessions/other.jsonl", undefined);
+    await expect(actions.fork("entry-1")).resolves.toEqual({ cancelled: false });
+    expect(fork).toHaveBeenCalledWith("entry-1", undefined);
+
+    await service.dispose();
+  });
+
+  it("carries the outgoing model and thinking level into an extension's replacement session", async () => {
+    // A real catalog model so `sameModelSpec` sees a concrete provider/id pair; the
+    // replacement starts unmodelled (`undefined`), which is what a fresh session file
+    // yields before pi resolves its default.
+    const inheritedModel = testModel();
+    const first = fakeRuntime("session-1", { model: inheritedModel, thinkingLevel: "high" });
+    const replacement = fakeRuntime("session-2", { thinkingLevel: "off" });
+    const setModel = vi.fn(() => Promise.resolve());
+    const setThinkingLevel = vi.fn();
+    replacement.session.setModel = setModel;
+    replacement.session.setThinkingLevel = setThinkingLevel;
+    // A replacement starts empty, so this is what pi would have set on its own.
+    first.runtime.newSession = async (options) => {
+      Object.defineProperty(first.runtime, "session", { configurable: true, value: replacement.session });
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- the callback only needs a stand-in; the service under test reads nothing from the context.
+      await options?.withSession?.({} as Parameters<NonNullable<NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>["withSession"]>>[0]);
+      return { cancelled: false };
+    };
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(first.runtime),
+      sessionManager: sessionGateway([]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+
+    const actions = first.calls.bindExtensions.at(-1)?.commandContextActions;
+    if (actions === undefined) throw new Error("expected command context actions on the extension bindings");
+    await expect(actions.newSession({})).resolves.toEqual({ cancelled: false });
+    expect(setModel).toHaveBeenCalledWith(inheritedModel);
+    expect(setThinkingLevel).toHaveBeenCalledWith("high");
+
+    await service.dispose();
+  });
+
+  it("rejects extension session replacement when the runtime does not support it", async () => {
+    const fake = fakeRuntime("session-1");
+    fake.runtime.newSession = () => Promise.resolve({ cancelled: true });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+
+    const actions = fake.calls.bindExtensions.at(-1)?.commandContextActions;
+    if (actions === undefined) throw new Error("expected command context actions on the extension bindings");
+    await expect(actions.newSession()).resolves.toEqual({ cancelled: true });
+    // A declined replacement leaves the original identity serving the browser.
+    await expect(service.status(sessionRef("session-1"))).resolves.toMatchObject({ sessionId: "session-1" });
+
+    await service.dispose();
+  });
+
+  it("announces a runtime replacement so a browser showing the replaced session can follow", async () => {
+    const hub = new CapturingSessionEventHub();
+    const first = fakeRuntime("session-1");
+    const replacement = fakeRuntime("session-2");
+    let rebindSession: ((session: PiAgentSession) => Promise<void>) | undefined;
+    first.runtime.setRebindSession = (callback) => { rebindSession = callback; };
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(first.runtime),
+      sessionManager: sessionGateway([]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+    await rebindSession?.(replacement.session);
+
+    expect(hub.globalEvents.filter((event) => event.type === "session.replaced")).toMatchObject([
+      {
+        type: "session.replaced",
+        previousSessionId: "session-1",
+        session: { id: "session-2", path: "/tmp/session-2.jsonl", cwd: "/workspace", messageCount: 0 },
+      },
+    ]);
 
     await service.dispose();
   });

@@ -1,9 +1,47 @@
 import { describe, expect, it } from "vitest";
 import { initialAppState } from "../appState";
 import { SessionController } from "./sessionController";
-import { defaultApi, EmitSocket, emptyPage, FakeSocket, oldSession, runPendingAnimationFrames, status, workspace, type AppState, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
+import { defaultApi, EmitSocket, emptyPage, FakeSocket, oldSession, replacementSession, runPendingAnimationFrames, status, workspace, type AppState, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
 
 describe("SessionController live events", () => {
+  it("follows a daemon-side runtime replacement of the session on screen", () => {
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const socket = new FakeSocket();
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api: defaultApi, socket },
+    );
+
+    controller.applyGlobalEvent({ type: "session.replaced", previousSessionId: oldSession.id, session: replacementSession });
+
+    expect(state.selectedSession?.id).toBe(replacementSession.id);
+    // The replaced session's file still exists on disk as this session's parent, so it stays
+    // listed; only the selection and the live socket move to the replacement.
+    expect(state.sessions.map((session) => session.id)).toEqual([replacementSession.id, oldSession.id]);
+    expect(socket.connectedSessionIds).toEqual([replacementSession.id]);
+  });
+
+  it("ignores a replacement behind a session this browser is not showing", () => {
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const socket = new FakeSocket();
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api: defaultApi, socket },
+    );
+
+    controller.applyGlobalEvent({ type: "session.replaced", previousSessionId: "some-other-session", session: replacementSession });
+
+    expect(state.selectedSession?.id).toBe(oldSession.id);
+    expect(state.sessions.map((session) => session.id)).toEqual([oldSession.id]);
+    expect(socket.connectedSessionIds).toEqual([]);
+  });
+
   it("notifies the host when the daemon scope revision changes", () => {
     const revisions: number[] = [];
     const controller = new SessionController(

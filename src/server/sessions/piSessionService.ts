@@ -19,6 +19,8 @@ import {
   type CreateAgentSessionRuntimeFactory,
   type CreateAgentSessionServicesOptions,
   type EditToolDetails,
+  type ExtensionCommandContext,
+  type ExtensionCommandContextActions,
   type ExtensionUIDialogOptions,
   type ExtensionUIContext,
   type ModelRuntime,
@@ -37,6 +39,7 @@ import { projectSessionTree, type ProjectableSessionTreeNode } from "./sessionTr
 import { SessionArchiveStore, type ArchivedSessionRecord, type ArchiveSessionInput } from "./sessionArchiveStore.js";
 import { findArchiveCandidateByIdOrPrefix, planSessionArchiveTree, type SessionArchiveTreeCandidate } from "./sessionArchiveTree.js";
 import type { ActiveSession } from "./sessionRuntimeStore.js";
+import { projectSessionInfo } from "./sessionInfoProjection.js";
 import { deterministicSessionName, fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
 import { computeEditPreview, type EditPreviewResult } from "./editPreview.js";
 import { attachmentsToInlineImages, saveAttachmentsToWorkspace } from "./attachmentService.js";
@@ -150,6 +153,11 @@ function subsessionCwdError(spawningCwd: string, requestedCwd: string): Error {
 
 function modelSpecOf(model: { provider: string; id: string }): string {
   return `${model.provider}/${model.id}`;
+}
+
+/** Whether a session already runs `model`, comparing the spec the UI shows. */
+function sameModelSpec(a: { provider: string; id: string } | undefined, b: { provider: string; id: string }): boolean {
+  return a !== undefined && modelSpecOf(a) === modelSpecOf(b);
 }
 
 /**
@@ -424,6 +432,7 @@ interface PiExtensionError {
 interface PiExtensionBindings {
   uiContext?: ExtensionUIContext;
   mode?: "rpc";
+  commandContextActions?: ExtensionCommandContextActions;
   onError?: (error: PiExtensionError) => void;
 }
 
@@ -476,6 +485,7 @@ export interface PiAgentSession {
   resourceLoader: { getSkills(): { skills: readonly { name: string; description?: string }[] } };
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: PiExtensionBindings): Promise<void>;
+  waitForIdle(): Promise<void>;
   compact(instructions?: string): Promise<{ summary: string; tokensBefore: number }>;
   getUserMessagesForForking(): readonly { entryId: string; text: string }[];
   getSessionStats(): { sessionId: string; totalMessages: number; userMessages: number; assistantMessages: number; toolCalls: number; tokens: ClientSessionStatus["tokens"]; cost: number };
@@ -507,6 +517,10 @@ export interface PiAgentSession {
   agent: { streamFunction: StreamFn };
 }
 
+/** Options accepted by the runtime's session replacement entry points. */
+type SessionReplacementOptions = Parameters<ExtensionCommandContext["newSession"]>[0];
+type SessionSwitchOptions = Parameters<ExtensionCommandContext["switchSession"]>[1];
+
 export interface PiSessionRuntime {
   readonly cwd: string;
   readonly session: PiAgentSession;
@@ -521,6 +535,16 @@ export interface PiSessionRuntime {
   readonly services?: AgentSessionServices;
   setRebindSession(rebindSession?: (session: PiAgentSession) => Promise<void>): void;
   fork(entryId: string, options?: { position?: "before" | "at" }): Promise<{ cancelled: boolean; selectedText?: string }>;
+  /**
+   * Replace this runtime's session with a fresh, empty session file.
+   *
+   * Same capability the SDK runtime host exposes; PI WEB keeps the replacement in its own
+   * hands so the active-map rekey, notification generation handoff, and the browser-facing
+   * `session.replaced` announcement all happen before an extension resumes.
+   */
+  newSession(options?: SessionReplacementOptions): Promise<{ cancelled: boolean }>;
+  /** Replace this runtime's session with an existing session file. */
+  switchSession(sessionPath: string, options?: SessionSwitchOptions): Promise<{ cancelled: boolean }>;
   dispose(): Promise<void>;
 }
 
@@ -3505,10 +3529,13 @@ export class PiSessionService implements SessionRouteService {
         await this.recoverSubsessionTrackingForOpenedSession(runtime.session);
       }
       startup.report(STARTUP_PHASE_EXTENSIONS);
-      await this.bindSessionExtensions(runtime.session, notificationGeneration);
+      await this.bindSessionExtensions(runtime.session, notificationGeneration, runtime);
       this.bindRuntime(active);
       runtime.setRebindSession(async (session) => {
         const priorGeneration = notificationGeneration;
+        // Captured before `boundSession` moves on: the browser still holds this identity,
+        // and the replacement is only reachable if we tell it the old one is gone.
+        const previousSessionId = boundSession.sessionId;
         let candidateGeneration: SessionNotificationGeneration | undefined;
         try {
           await this.prepareUnreadRuntimeRebind(boundSession, session);
@@ -3523,11 +3550,12 @@ export class PiSessionService implements SessionRouteService {
           // runtime's extensions can open fresh dialogs under the same id.
           this.endSessionExtensionDialogs(boundSession.sessionId);
           boundSession = session;
-          await this.bindSessionExtensions(session, candidateGeneration);
+          await this.bindSessionExtensions(session, candidateGeneration, runtime);
           if (candidateGeneration !== undefined) {
             this.publishNotificationMutations(this.notificationStore.commitReplacement(candidateGeneration));
             notificationGeneration = candidateGeneration;
           }
+          this.publishSessionReplaced(previousSessionId, session);
         } catch (error: unknown) {
           if (candidateGeneration !== undefined) {
             this.publishNotificationMutations(this.notificationStore.abortReplacement(candidateGeneration, "candidate"));
@@ -3578,9 +3606,17 @@ export class PiSessionService implements SessionRouteService {
     }
   }
 
+  /**
+   * Bind (or re-bind) extension services onto `session`.
+   *
+   * `runtime` hosts the replacement entry points and is passed separately because the
+   * rebind callback receives the new session explicitly: the session to bind comes from the
+   * caller, never from reading `runtime.session` back.
+   */
   private async bindSessionExtensions(
     session: PiAgentSession,
     generation: SessionNotificationGeneration | undefined,
+    runtime: PiSessionRuntime,
   ): Promise<void> {
     const uiContext = this.sessionUiContext(session, generation);
     // A `session_start` hook can park this bind on a dialog the browser has
@@ -3597,10 +3633,87 @@ export class PiSessionService implements SessionRouteService {
           this.publishActivity(session, "extension error", "error", message);
           this.events.publish(session.sessionId, { type: "session.error", message });
         },
+        // Session replacement stays ours: the runtime owns the active-map rekey, the
+        // notification generation handoff, and the browser follow-up, so extensions route
+        // their `newSession`/`fork`/`switchSession` through these runtime entry points
+        // instead of the SDK's no-op defaults.
+        commandContextActions: {
+          waitForIdle: () => session.waitForIdle(),
+          newSession: (options) => this.replaceSessionInheritingModel(runtime, session, options),
+          fork: async (entryId, options) => ({ cancelled: (await runtime.fork(entryId, options)).cancelled }),
+          navigateTree: async (targetId, options) => {
+            // PI WEB treats tree navigation as optional on a runtime; a replacement-capable
+            // runtime without it simply declines instead of failing the whole bind.
+            if (session.navigateTree === undefined) return { cancelled: true };
+            return { cancelled: (await session.navigateTree(targetId, options)).cancelled };
+          },
+          switchSession: (sessionPath, options) => runtime.switchSession(sessionPath, options),
+          reload: () => session.reload(),
+        },
       });
     } finally {
       this.startupSessions.delete(session.sessionId);
     }
+  }
+
+  /**
+   * Announce that `previousSessionId` was replaced by `session`.
+   *
+   * The replaced identity is gone from the active map, so its per-session stream ends
+   * without a terminal event; a browser showing it would otherwise sit on a session the
+   * daemon no longer serves. Published for every runtime replacement, including the
+   * builtin `/fork`, `/clone`, and `/resume` paths, where the command response already
+   * navigates and this event converges on the same session.
+   */
+  /**
+   * Replace the runtime's session with a fresh one, carrying the outgoing
+   * session's model and thinking level across.
+   *
+   * A replacement starts from an empty session file, so pi resolves the default
+   * model (and thinking level) for it. But a replacement is a continuation —
+   * the handoff extension continues the same work in a smaller context — so the
+   * model the user chose has to follow. The SDK invalidates an extension's `pi`
+   * the moment the session is replaced and `withSession` receives a context
+   * without `setModel`, so the host applies the inheritance here, before
+   * `withSession` sends the continuation's first turn.
+   */
+  private async replaceSessionInheritingModel(
+    runtime: PiSessionRuntime,
+    outgoing: PiAgentSession,
+    options: SessionReplacementOptions,
+  ): Promise<{ cancelled: boolean }> {
+    const model = outgoing.model;
+    const thinkingLevel = outgoing.thinkingLevel;
+    const withSession = options?.withSession;
+    return runtime.newSession({
+      ...options,
+      withSession: async (newCtx) => {
+        const replacement = runtime.session;
+        if (model !== undefined && !sameModelSpec(replacement.model, model)) {
+          try {
+            await replacement.setModel(model);
+            this.publishActivity(replacement, `model: ${model.id}`, "idle", model.provider);
+          } catch (error: unknown) {
+            this.publishActivity(replacement, "inherit model failed", "error", error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (replacement.thinkingLevel !== thinkingLevel) {
+          replacement.setThinkingLevel(thinkingLevel);
+          this.publishActivity(replacement, `thinking: ${replacement.thinkingLevel}`, "idle");
+        }
+        this.publishStatus(replacement);
+        await withSession?.(newCtx);
+      },
+    });
+  }
+
+  private publishSessionReplaced(previousSessionId: string, session: PiAgentSession): void {
+    if (previousSessionId === session.sessionId) return;
+    this.events.publishGlobal({
+      type: "session.replaced",
+      previousSessionId,
+      session: projectSessionInfo(session.sessionManager.getCwd(), session),
+    });
   }
 
   private replaceSessionNotificationContext(session: PiAgentSession, generation: SessionNotificationGeneration): void {

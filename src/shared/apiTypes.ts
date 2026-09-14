@@ -1357,8 +1357,22 @@ export interface ModelScopeChangedEvent {
   revision: number;
 }
 
+/**
+ * The daemon replaced the runtime behind a session identity — an extension called
+ * `newSession`, `fork`, or `switchSession`, or a builtin path did the same. The replaced
+ * identity leaves the daemon's active set, so its per-session stream simply stops; this
+ * global event is how the browser learns to follow the replacement instead of sitting on
+ * a session that no longer exists.
+ */
+export interface SessionReplacedEvent {
+  type: "session.replaced";
+  previousSessionId: string;
+  session: SessionInfo;
+}
+
 export type GlobalSessionEvent =
   | Extract<SessionUiEventBody, { type: "status.update" | "activity.update" | "session.name" | "session.created" }>
+  | SessionReplacedEvent
   | SessionNotificationSummaryEvent
   | SessionUnreadEvent
   | SessionStartupProgressEvent

@@ -180,6 +180,7 @@ export function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession>
     },
     getSessionStats: () => ({ sessionId, totalMessages: 0, userMessages: 0, assistantMessages: 0, toolCalls: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
     getContextUsage: () => undefined,
+    waitForIdle: () => Promise.resolve(),
     reload: () => {
       calls.reload += 1;
       return Promise.resolve();
@@ -219,6 +220,8 @@ export function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession>
     session,
     setRebindSession: () => undefined,
     fork: () => Promise.resolve({ cancelled: false }),
+    newSession: () => Promise.resolve({ cancelled: false }),
+    switchSession: () => Promise.resolve({ cancelled: false }),
     dispose: () => {
       calls.dispose += 1;
       return Promise.resolve();

@@ -5,6 +5,7 @@ import { isCachedNewSessionInfo } from "../cachedNewSessions";
 import { shortSessionId } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
 import { normalizeSessionPath } from "../sessionPaths";
+import { loadPinnedSessionIds, movePinnedId, savePinnedSessionIds, togglePinnedId } from "../pinnedSessions";
 import { isSessionActive } from "../../../shared/activity";
 import { actionMenuPanelStyle } from "./actionMenu";
 import { renderActionActivityIndicator, type ActivityIndicatorKind } from "./activityBadge";
@@ -67,6 +68,9 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   @state() private openMenuSessionId: string | undefined;
   @state() private menuStyle = "";
+  @state() private pinnedSessionIds: readonly string[] = loadPinnedSessionIds();
+  @state() private dragPinnedId: string | undefined;
+  @state() private dragOverPinnedId: string | undefined;
   @state() private archivedExpanded = false;
   @state() private selectionScopes: ReadonlySet<SessionSelectionScope> = new Set();
   @state() private selectedSessionIds: ReadonlySet<string> = new Set();
@@ -89,6 +93,10 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   protected override updated(changed: PropertyValues<this>): void {
     if (changed.has("sessions")) {
       if (this.openMenuSessionId !== undefined && !this.sessions.some((session) => session.id === this.openMenuSessionId)) this.openMenuSessionId = undefined;
+      if (this.dragPinnedId !== undefined && !this.sessions.some((session) => session.id === this.dragPinnedId)) {
+        this.dragPinnedId = undefined;
+        this.dragOverPinnedId = undefined;
+      }
       if (!this.sessions.some((session) => session.archived === true)) this.archivedExpanded = false;
       this.pruneSelectedSessionIds();
     }
@@ -125,19 +133,23 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   override render() {
-    const currentRows = sessionRowsForCurrentTree(this.sessions);
-    const currentRowIds = new Set(currentRows.map((row) => row.session.id));
-    const currentSelectableSessions = currentRows.map((row) => row.session).filter((session) => sessionSelectionScope(session) === "current");
+    const allCurrentRows = sessionRowsForCurrentTree(this.sessions);
+    const pinnedRows = this.pinnedSessionRows(this.sessions);
+    const pinnedIds = new Set(pinnedRows.map((row) => row.session.id));
+    const currentRows = allCurrentRows.filter((row) => !pinnedIds.has(row.session.id));
+    const currentRowIds = new Set(allCurrentRows.map((row) => row.session.id));
+    const currentSelectableSessions = [...pinnedRows, ...currentRows].map((row) => row.session).filter((session) => sessionSelectionScope(session) === "current");
     const archivedRows = sessionRows(this.sessions.filter((session) => session.archived === true && !currentRowIds.has(session.id)));
     const descendantCounts = unarchivedDescendantCounts(this.sessions);
     const unreadCount = unreadSessionCount(currentSelectableSessions, this.unreadSessionIds);
     return html`
       <section>
-        ${this.renderHeading(currentRows.length + archivedRows.length, currentSelectableSessions, unreadCount)}
+        ${this.renderHeading(pinnedRows.length + currentRows.length + archivedRows.length, currentSelectableSessions, unreadCount)}
         ${this.collapsed ? null : html`
           <div class="list-body">
             ${this.renderCurrentSelectionToolbar(currentSelectableSessions)}
             ${this.startingCount > 0 ? this.renderStartingSession() : null}
+            ${pinnedRows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "current", true))}
             ${currentRows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "current"))}
             ${archivedRows.length > 0 ? html`
               ${this.renderArchivedHeading(archivedRows.map((row) => row.session))}
@@ -272,7 +284,23 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
       : html`<button @click=${() => { this.clearSelection(scope); }}>Clear selected (${selectedCount})</button>`;
   }
 
-  private renderSession(row: SessionRow, descendantCount: number, scope: SessionSelectionScope) {
+  /**
+   * Pinned rows are lifted out of the tree in pin order (newest pin first) and
+   * rendered flat above it. Archived sessions are never lifted: they stay in
+   * the archived section.
+   */
+  private pinnedSessionRows(sessions: SessionInfo[]): SessionRow[] {
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    const rows: SessionRow[] = [];
+    for (const id of this.pinnedSessionIds) {
+      const session = byId.get(id);
+      if (session === undefined || session.archived === true) continue;
+      rows.push({ session, depth: 0, hasMissingParent: false });
+    }
+    return rows;
+  }
+
+  private renderSession(row: SessionRow, descendantCount: number, scope: SessionSelectionScope, pinned = false) {
     const { session } = row;
     const cappedDepth = Math.min(row.depth, 2);
     const canBulkSelect = sessionSelectionScope(session) === scope;
@@ -287,12 +315,17 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const canDeleteTransient = isTransientNewSessionInfo(session, status);
     return html`
       <div
-        class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${selectionActive ? "selecting" : ""} ${unread ? "unread" : ""}"
+        class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${selectionActive ? "selecting" : ""} ${unread ? "unread" : ""} ${pinned ? "pinned" : ""} ${pinned && this.dragOverPinnedId === session.id ? "drag-over" : ""} ${pinned && this.dragPinnedId === session.id ? "dragging" : ""}"
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${session.path}
+        .draggable=${pinned}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.activateSessionRow(session, scope); }); }}
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session, scope); }}
+        @dragstart=${pinned ? (event: DragEvent) => { this.handlePinnedDragStart(event, session); } : null}
+        @dragover=${pinned ? (event: DragEvent) => { this.handlePinnedDragOver(event, session); } : null}
+        @drop=${pinned ? (event: DragEvent) => { this.handlePinnedDrop(event, session); } : null}
+        @dragend=${pinned ? () => { this.handlePinnedDragEnd(); } : null}
       >
         <div class="action-main ${selectionActive ? "selecting" : ""}">
           ${showsCheckbox ? html`<input class="session-checkbox" type="checkbox" aria-label=${`Select ${sessionLabel(session)}`} .checked=${bulkSelected} @click=${(event: MouseEvent) => { event.stopPropagation(); }} @change=${() => { this.toggleSelected(session.id); }}>` : null}
@@ -300,7 +333,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
           ${this.renderActivity(indicatorKind, unread)}
         </div>
         <div class="action-menu">
-          <button class="action-menu-toggle" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
+          ${session.archived === true ? null : html`<button class="action-pin-toggle ${pinned ? "pinned" : ""}" title=${pinned ? "Unpin session" : "Pin session to top"} aria-pressed=${String(pinned)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.togglePinned(session.id); }}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 4v5c0 1.12.37 2.16 1 3H9c.65-.86 1-1.9 1-3V4h4m3-2H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3V4h1c.55 0 1-.45 1-1s-.45-1-1-1z"/></svg></button>`}
+          <button class="action-menu-toggle ${session.archived === true ? "solo" : ""}" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
           ${this.openMenuSessionId === session.id ? html`
             <div class="action-menu-panel" style=${this.menuStyle}>
               ${session.archived === true
@@ -442,6 +476,42 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     if (this.selectionScopes.has("current") && !this.sessions.some((session) => session.archived !== true)) this.closeSelection("current");
   }
 
+  private togglePinned(sessionId: string): void {
+    this.setPinnedSessionIds(togglePinnedId(this.pinnedSessionIds, sessionId));
+  }
+
+  private setPinnedSessionIds(ids: string[]): void {
+    this.pinnedSessionIds = ids;
+    savePinnedSessionIds(ids);
+  }
+
+  private handlePinnedDragStart(event: DragEvent, session: SessionInfo): void {
+    this.dragPinnedId = session.id;
+    event.dataTransfer?.setData("text/plain", session.id);
+    if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = "move";
+  }
+
+  private handlePinnedDragOver(event: DragEvent, session: SessionInfo): void {
+    if (this.dragPinnedId === undefined || this.dragPinnedId === session.id) return;
+    event.preventDefault();
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "move";
+    this.dragOverPinnedId = session.id;
+  }
+
+  private handlePinnedDrop(event: DragEvent, session: SessionInfo): void {
+    event.preventDefault();
+    const fromId = this.dragPinnedId;
+    this.dragPinnedId = undefined;
+    this.dragOverPinnedId = undefined;
+    if (fromId === undefined || fromId === session.id) return;
+    this.setPinnedSessionIds(movePinnedId(this.pinnedSessionIds, fromId, session.id));
+  }
+
+  private handlePinnedDragEnd(): void {
+    this.dragPinnedId = undefined;
+    this.dragOverPinnedId = undefined;
+  }
+
   private toggleMenu(sessionId: string, target: EventTarget | null) {
     if (this.openMenuSessionId === sessionId) {
       this.openMenuSessionId = undefined;
@@ -485,6 +555,19 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     h2 > .section-unread-count { flex: 0 0 auto; display: inline; color: var(--pi-accent); font-size: inherit; text-transform: none; }
     .bulk-select-entry { box-sizing: border-box; flex: 0 0 auto; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; font-size: 13px; line-height: 1; text-transform: none; }
     .start-session-button { box-sizing: border-box; flex: 0 0 auto; display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 9px; }
+    /* Pin sits above the actions menu, so the row's trailing column is a small stack. */
+    .action-menu { position: relative; align-self: stretch; display: flex; flex-direction: column; }
+    .action-menu > .action-pin-toggle { display: grid; place-items: center; flex: 0 0 auto; box-sizing: border-box; height: 20px; min-width: 32px; padding: 0; color: var(--pi-muted); border-left: 0; border-bottom: 0; border-radius: 0 8px 0 0; }
+    .action-pin-toggle svg { width: 14px; height: 14px; fill: currentColor; }
+    .action-menu > .action-menu-toggle { display: grid; place-items: center; flex: 1 1 auto; box-sizing: border-box; height: auto; min-width: 32px; padding: 0; color: var(--pi-muted); border-left: 0; border-radius: 0 0 8px 0; }
+    .action-menu > .action-menu-toggle.solo { border-radius: 0 8px 8px 0; }
+    .action-pin-toggle:not(.pinned) { opacity: .55; }
+    .action-pin-toggle.pinned { color: var(--pi-accent); }
+    .action-pin-toggle:hover { color: var(--pi-text); background: var(--pi-surface-hover); opacity: 1; }
+    .action-row.selected .action-pin-toggle { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
+    .action-row.pinned { cursor: grab; }
+    .action-row.pinned.dragging { opacity: .5; }
+    .action-row.pinned.drag-over { box-shadow: inset 0 2px 0 var(--pi-accent); }
     .cleanup-entry { flex: 0 0 auto; padding: 5px 7px; font-size: 12px; text-transform: none; }
     .bulk-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
     .bulk-row button { padding: 5px 7px; font-size: 12px; white-space: nowrap; }

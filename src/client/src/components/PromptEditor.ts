@@ -14,7 +14,6 @@ import { detectPromptCompletionTrigger, fileCompletionInsertText, modelCompletio
 import { clearDraft, loadDraft, saveDraft } from "../promptDraftStorage";
 import { clearStagedAttachments, loadStagedAttachments, saveStagedAttachments, type PendingAttachment } from "../promptAttachmentStaging";
 import { loadAttachmentDelivery, saveAttachmentDelivery } from "../attachmentPreferences";
-import { createMobilePromptEnterMedia, readPromptEnterPreference, shouldSendPromptOnEnterShortcut, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
 import { promptEditorStyles, type CompletionItem } from "./shared";
 import { renderAttachIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
 import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
@@ -64,8 +63,6 @@ export class PromptEditor extends LitElement {
   private editor: EditorView | undefined;
   private readonly editableCompartment = new Compartment();
   private readonly readOnlyCompartment = new Compartment();
-  private readonly mobilePromptEnterMedia = createMobilePromptEnterMedia();
-  private explicitShiftKeyActive = false;
 
   protected override willUpdate(changed: PropertyValues<this>) {
     if (!changed.has("sessionId") && !changed.has("machineId")) return;
@@ -289,10 +286,6 @@ export class PromptEditor extends LitElement {
           EditorView.lineWrapping,
           drawSelection(),
           EditorView.contentAttributes.of((view) => inputAssistanceContentAttributes(view.state.sliceDoc(0, view.state.selection.main.head))),
-          EditorView.domEventHandlers({
-            keyup: (event) => this.handleEditorKeyUp(event),
-            blur: () => this.resetEditorModifierState(),
-          }),
           placeholder("Message pi... Use / for commands, @ for tracked files, @ space for all files, # for models"),
           this.editableCompartment.of(EditorView.editable.of(!this.disabled)),
           this.readOnlyCompartment.of(EditorState.readOnly.of(this.disabled)),
@@ -411,40 +404,20 @@ export class PromptEditor extends LitElement {
   }
 
   private handleEditorKeyDown(event: KeyboardEvent, view: EditorView): boolean {
-    if (event.key === "Shift") {
-      this.explicitShiftKeyActive = true;
-      return false;
-    }
-    if (event.key !== "Enter") {
-      this.explicitShiftKeyActive = false;
-      return false;
-    }
+    if (event.key !== "Enter") return false;
     if (event.defaultPrevented || event.isComposing || view.composing) return false;
-
-    const shiftKey = shouldUsePromptEnterShiftShortcut(event.shiftKey, this.explicitShiftKeyActive, this.mobilePromptEnterMedia);
-    this.explicitShiftKeyActive = false;
-    return this.handleEditorEnter(view, shiftKey);
+    return this.handleEditorEnter(view, event.ctrlKey || event.metaKey);
   }
 
-  private handleEditorKeyUp(event: KeyboardEvent): boolean {
-    if (event.key === "Shift") this.explicitShiftKeyActive = false;
-    return false;
-  }
-
-  private resetEditorModifierState(): boolean {
-    this.explicitShiftKeyActive = false;
-    return false;
-  }
-
-  private handleEditorEnter(view: EditorView, shiftKey: boolean): boolean {
-    if (!shiftKey && this.completions.length) {
+  private handleEditorEnter(view: EditorView, sendShortcut: boolean): boolean {
+    // Enter and Shift+Enter never send: a bare Enter accepts an open completion,
+    // everything else inserts a newline. Ctrl/Cmd+Enter is the one submit gesture.
+    if (!sendShortcut && this.completions.length) {
       const completion = this.completions[this.selectedIndex];
       if (completion !== undefined) this.pick(completion);
       return true;
     }
-    if (!shouldSendPromptOnEnterShortcut(shiftKey, this.mobilePromptEnterMedia, readPromptEnterPreference())) {
-      return insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
-    }
+    if (!sendShortcut) return insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
     this.send(this.canSteer || this.isCompacting ? "followUp" : undefined);
     return true;
   }

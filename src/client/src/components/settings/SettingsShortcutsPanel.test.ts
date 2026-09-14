@@ -28,20 +28,9 @@ describe("settings-shortcuts-panel layout", () => {
       "Reload",
       "Failed to load shortcut settings.",
       "Shortcut settings saved.",
-      "Chat composer",
       "Config file",
       "No actions registered.",
     ]);
-  });
-
-  it("keeps the prompt-enter card before the loading shortcuts state", () => {
-    const panel = new SettingsShortcutsPanel();
-    panel.loading = true;
-
-    const rendered = flattenTemplateContent(panel.render());
-
-    expectTextOrder(rendered, ["Keyboard shortcuts", "Chat composer", "Loading shortcuts…"]);
-    expect(rendered).not.toContain("Config file");
   });
 });
 

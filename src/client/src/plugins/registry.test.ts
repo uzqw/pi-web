@@ -505,7 +505,6 @@ describe("PluginRegistry", () => {
       ["core:view.files", "mod+2"],
       ["core:view.terminal", "mod+4"],
       ["core:workspace.refresh-files", "mod+shift+f"],
-      ["core:session.start", "mod+enter"],
       ["core:session.stop", "mod+."],
     ]);
     expect(new Set(shortcuts.map(([, shortcut]) => shortcut)).size).toBe(shortcuts.length);

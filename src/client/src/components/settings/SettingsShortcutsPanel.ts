@@ -3,29 +3,10 @@ import { customElement, property, state } from "lit/decorators.js";
 import type { AppAction } from "../../actions";
 import type { PiWebConfigResponse, PiWebConfigValues, PiWebShortcutConfig } from "../../api";
 import { formatShortcut, isShortcutSequenceStarter, parseShortcutInput, resolveShortcutBindings, shortcutPreferenceForAction, shortcutSequenceTimeoutMs, shortcutTokenFromEvent, type ShortcutBindingResolution } from "../../keyboardShortcuts";
-import { readPromptEnterPreference, writePromptEnterPreference, type PromptEnterPreference } from "../../promptEnterBehavior";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 
 const RECORD_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
-
-const PROMPT_ENTER_OPTIONS: readonly { value: PromptEnterPreference; label: string; description: string }[] = [
-  {
-    value: "auto",
-    label: "Auto/default",
-    description: "Desktop-like Enter sends; mobile, coarse pointer, or narrow screens insert a new line.",
-  },
-  {
-    value: "send",
-    label: "Enter sends message",
-    description: "Enter sends the chat message; Shift+Enter adds a new line when supported.",
-  },
-  {
-    value: "newline",
-    label: "Enter inserts new line",
-    description: "Enter adds a line break; Shift+Enter sends the chat message when supported.",
-  },
-];
 
 function renderShortcutsDescription(): TemplateResult {
   return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code> or <code>mod+g p</code>, record one from the keyboard, disable it with None, or reset it to the default. When shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
@@ -43,7 +24,6 @@ export class SettingsShortcutsPanel extends LitElement {
   @property({ attribute: false }) onSave?: (config: PiWebConfigValues) => void | Promise<void>;
   @state() private drafts: Record<string, string> = {};
   @state() private localError = "";
-  @state() private promptEnterPreference: PromptEnterPreference = readPromptEnterPreference();
   @state() private recording: RecordingState | undefined;
   private recordingTimer: number | undefined;
   private recordingListenerActive = false;
@@ -101,7 +81,6 @@ export class SettingsShortcutsPanel extends LitElement {
         .notices=${this.panelNotices()}
         .onAction=${this.onReload}
       >
-        ${this.renderPromptEnterPreferenceCard()}
         ${this.configResponse === undefined && this.loading ? html`<div class="loading-card">Loading shortcuts…</div>` : html`
           <div class="config-path-card">
             <span>Config file</span>
@@ -127,40 +106,6 @@ export class SettingsShortcutsPanel extends LitElement {
     if (error !== "") notices.push({ type: "error", content: error });
     if (this.savedMessage !== "") notices.push({ type: "success", content: this.savedMessage });
     return notices;
-  }
-
-  private renderPromptEnterPreferenceCard(): TemplateResult {
-    return html`
-      <section class="prompt-enter-card" aria-labelledby="prompt-enter-preference-title">
-        <div class="prompt-enter-copy">
-          <span class="card-eyebrow">Chat composer</span>
-          <h3 id="prompt-enter-preference-title">Enter key behavior</h3>
-          <p>Choose what Enter does in this browser. Shift+Enter does the opposite when supported; automatic touch-keyboard capitalization is ignored to avoid accidental sends.</p>
-        </div>
-        <div class="prompt-enter-options" role="radiogroup" aria-label="Enter and Shift Enter behavior in the chat composer">
-          ${PROMPT_ENTER_OPTIONS.map((option) => html`
-            <label class="prompt-enter-option">
-              <input
-                type="radio"
-                name="prompt-enter-preference"
-                .value=${option.value}
-                .checked=${this.promptEnterPreference === option.value}
-                @change=${() => { this.updatePromptEnterPreference(option.value); }}
-              >
-              <span>
-                <strong>${option.label}</strong>
-                <small>${option.description}</small>
-              </span>
-            </label>
-          `)}
-        </div>
-      </section>
-    `;
-  }
-
-  private updatePromptEnterPreference(preference: PromptEnterPreference): void {
-    this.promptEnterPreference = preference;
-    writePromptEnterPreference(preference);
   }
 
   private renderShortcutRow(action: AppAction, resolution: ShortcutBindingResolution | undefined): TemplateResult {
@@ -351,19 +296,10 @@ export class SettingsShortcutsPanel extends LitElement {
     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
     button:disabled, input:disabled { opacity: .55; cursor: not-allowed; }
     .primary { border-color: var(--pi-accent); background: var(--pi-selection-bg); color: var(--pi-text-bright); }
-    .loading-card, .config-path-card, .prompt-enter-card { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
+    .loading-card, .config-path-card { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
     .loading-card, .config-path-card { color: var(--pi-muted); }
     .config-path-card { display: grid; gap: 5px; }
-    .config-path-card span, .card-eyebrow { color: var(--pi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
-    .prompt-enter-card { display: grid; grid-template-columns: minmax(0, .85fr) minmax(260px, 1fr); gap: 12px; align-items: start; }
-    .prompt-enter-copy { display: grid; gap: 5px; min-width: 0; }
-    .prompt-enter-copy p, .prompt-enter-option small { font-size: 12px; }
-    .prompt-enter-options { display: grid; gap: 7px; }
-    .prompt-enter-option { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: start; color: var(--pi-text); }
-    .prompt-enter-option input { box-sizing: border-box; width: 14px; min-width: 14px; height: 14px; margin: 3px 0 0; padding: 0; border: 0; background: transparent; accent-color: var(--pi-accent); font-family: inherit; }
-    .prompt-enter-option input:focus { border-color: transparent; box-shadow: none; outline: 2px solid var(--pi-accent-border); outline-offset: 2px; }
-    .prompt-enter-option span { display: grid; gap: 2px; }
-    .prompt-enter-option small { color: var(--pi-muted); line-height: 1.35; }
+    .config-path-card span { color: var(--pi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
     code { border: 1px solid var(--pi-border-muted); border-radius: 5px; background: var(--pi-bg); padding: 1px 4px; color: var(--pi-text); font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
     .shortcut-group { margin: 0; }
     .shortcut-group h3 { margin: 0 0 8px; color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
@@ -394,7 +330,6 @@ export class SettingsShortcutsPanel extends LitElement {
     .recording-hint { color: var(--pi-accent); font-size: 12px; }
 
     @media (max-width: 760px) {
-      .prompt-enter-card { grid-template-columns: minmax(0, 1fr); }
       .shortcut-row { grid-template-columns: minmax(0, 1fr); align-items: start; }
       .shortcut-status, .shortcut-actions { justify-content: flex-start; }
     }

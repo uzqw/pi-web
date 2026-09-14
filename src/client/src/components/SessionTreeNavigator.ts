@@ -55,6 +55,9 @@ export class SessionTreeNavigator extends LitElement {
   @state() private aborting = false;
   @state() private error = "";
   @state() private statusMessage = "";
+  // Branch targets are almost always user/assistant turns; tool calls, shell
+  // runs, and metadata entries are hidden by default but one checkbox away.
+  @state() private conversationOnly = true;
 
   private model: SessionTreeModel = buildSessionTreeModel(EMPTY_TREE);
   private pendingFocus: PendingFocus | undefined;
@@ -97,7 +100,7 @@ export class SessionTreeNavigator extends LitElement {
   }
 
   private renderTreeStep(): TemplateResult {
-    const rows = visibleSessionTreeRows(this.model, this.foldedIds);
+    const rows = visibleSessionTreeRows(this.model, this.foldedIds, this.rowVisibility());
     return html`
       <div class="body tree-step">
         <div class="tree-intro">
@@ -107,6 +110,14 @@ export class SessionTreeNavigator extends LitElement {
             <span><span class="marker active-leaf-marker" aria-hidden="true"></span>Active leaf</span>
           </div>
         </div>
+        <label class="conversation-filter">
+          <input
+            type="checkbox"
+            .checked=${this.conversationOnly}
+            @change=${(event: Event) => { this.toggleConversationFilter(event); }}
+          >
+          <span>Conversation only (hide tool calls and metadata)</span>
+        </label>
         ${this.statusMessage === "" ? null : html`<div class="dialog-status" role="status">${this.statusMessage}</div>`}
         ${this.error === "" ? null : html`<div class="dialog-error" role="alert">${this.error}</div>`}
         ${rows.length === 0 ? html`
@@ -297,7 +308,8 @@ export class SessionTreeNavigator extends LitElement {
   private resetTree(): void {
     this.operationGeneration += 1;
     this.model = buildSessionTreeModel(this.tree);
-    this.selectedId = initialSessionTreeSelection(this.model);
+    this.conversationOnly = true;
+    this.selectedId = initialSessionTreeSelection(this.model, this.rowVisibility());
     this.foldedIds = new Set();
     this.step = "tree";
     this.operation = "continue";
@@ -305,6 +317,27 @@ export class SessionTreeNavigator extends LitElement {
     this.customInstructions = "";
     this.busy = false;
     this.aborting = false;
+    this.error = "";
+    this.statusMessage = "";
+    this.pendingFocus = "tree";
+  }
+
+  private rowVisibility(): ((node: SessionTreeRow["node"]) => boolean) | undefined {
+    if (!this.conversationOnly) return undefined;
+    return (node) => node.kind === "user" || node.kind === "assistant";
+  }
+
+  private toggleConversationFilter(event: Event): void {
+    if (!(event.currentTarget instanceof HTMLInputElement)) return;
+    this.conversationOnly = event.currentTarget.checked;
+    const isVisible = this.rowVisibility();
+    // Keep the selection on a rendered row when the filter hides it.
+    if (isVisible !== undefined && this.selectedId !== undefined) {
+      const selected = this.model.nodesById.get(this.selectedId);
+      if (selected !== undefined && !isVisible(selected)) {
+        this.selectedId = initialSessionTreeSelection(this.model, isVisible);
+      }
+    }
     this.error = "";
     this.statusMessage = "";
     this.pendingFocus = "tree";
@@ -333,7 +366,7 @@ export class SessionTreeNavigator extends LitElement {
     // The modal surface owns Escape everywhere; the pure model still maps it for
     // consumers that drive a tree without the surface.
     if (event.key === "Escape") return;
-    const next = transitionSessionTreeKey(this.model, { selectedId: this.selectedId, foldedIds: this.foldedIds }, event.key);
+    const next = transitionSessionTreeKey(this.model, { selectedId: this.selectedId, foldedIds: this.foldedIds }, event.key, this.rowVisibility());
     if (!next.handled) return;
     event.preventDefault();
     event.stopPropagation();
@@ -537,6 +570,8 @@ export class SessionTreeNavigator extends LitElement {
     .body { flex: 1 1 auto; min-height: 0; overflow: auto; }
     .tree-step { display: flex; flex-direction: column; gap: 10px; padding: 14px max(18px, env(safe-area-inset-right)) 16px max(18px, env(safe-area-inset-left)); }
     .tree-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; color: var(--pi-muted); }
+    .conversation-filter { display: inline-flex; align-items: center; gap: 8px; width: fit-content; color: var(--pi-muted); font-size: 12px; cursor: pointer; }
+    .conversation-filter input { accent-color: var(--pi-accent); }
     .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; }
     .legend > span { display: inline-flex; align-items: center; gap: 5px; }
     .marker { width: 9px; height: 9px; border-radius: 999px; background: var(--pi-border); }

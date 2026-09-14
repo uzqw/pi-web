@@ -10,6 +10,7 @@ import { actionMenuPanelStyle } from "./actionMenu";
 import { hasStatusUnread, renderActionActivityIndicator, statusActivityKind } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
+import { PinnedListController, pinnedListStyles, renderPinToggle } from "../pinnedList";
 import { listStyles } from "./shared";
 import { renderWorkspaceLabelInlineItems } from "./workspaceLabel";
 
@@ -40,6 +41,7 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
   @state() private openMenuWorkspaceId: string | undefined;
   @state() private menuStyle = "";
+  private readonly pins = new PinnedListController(this, "pi-web:pinned-workspaces");
   @state() private copiedDetailKey: string | undefined;
   @state() private trustByWorkspaceId: Record<string, WorkspaceTrustState> = {};
 
@@ -82,32 +84,41 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   }
 
   override render() {
+    const { pinned, rest } = this.pins.partition(this.workspaces, (workspace) => workspace.id);
     return html`
       <section>
         <h2>${this.renderHeading()}</h2>
         ${this.collapsed ? null : html`
           <div class="list-body">
-            ${this.workspaces.map((workspace) => {
-              const label = workspacePrimaryLabel(workspace);
-              const items = this.workspaceLabelItems(workspace);
-              return html`
-                <div
-                  class=${`action-row workspace-row ${this.selected?.id === workspace.id ? "selected" : ""}`}
-                  tabindex="0"
-                  title=${label}
-                  @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(workspace)); }}
-                  @keydown=${(event: KeyboardEvent) => { this.handleWorkspaceKeydown(event, workspace); }}
-                >
-                  <div class="action-main">
-                    ${this.renderWorkspaceMain(label, items, workspace)}
-                  </div>
-                  ${this.renderWorkspaceMenu(label, items, workspace)}
-                </div>
-              `;
-            })}
+            ${pinned.map((workspace) => this.renderWorkspaceRow(workspace, true))}
+            ${rest.map((workspace) => this.renderWorkspaceRow(workspace, false))}
           </div>
         `}
       </section>
+    `;
+  }
+
+  private renderWorkspaceRow(workspace: Workspace, pinned: boolean): TemplateResult {
+    const label = workspacePrimaryLabel(workspace);
+    const items = this.workspaceLabelItems(workspace);
+    return html`
+      <div
+        class=${`action-row workspace-row ${this.selected?.id === workspace.id ? "selected" : ""} ${pinned ? "pinned" : ""} ${pinned && this.pins.dragOverId === workspace.id ? "drag-over" : ""} ${pinned && this.pins.dragId === workspace.id ? "dragging" : ""}`}
+        tabindex="0"
+        title=${label}
+        .draggable=${pinned}
+        @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(workspace)); }}
+        @keydown=${(event: KeyboardEvent) => { this.handleWorkspaceKeydown(event, workspace); }}
+        @dragstart=${(event: DragEvent) => { this.pins.handleDragStart(event, workspace.id); }}
+        @dragover=${(event: DragEvent) => { this.pins.handleDragOver(event, workspace.id); }}
+        @drop=${(event: DragEvent) => { this.pins.handleDrop(event, workspace.id); }}
+        @dragend=${() => { this.pins.handleDragEnd(); }}
+      >
+        <div class="action-main">
+          ${this.renderWorkspaceMain(label, items, workspace)}
+        </div>
+        ${this.renderWorkspaceMenu(label, items, workspace)}
+      </div>
     `;
   }
 
@@ -145,6 +156,7 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
     const menuId = workspaceMenuId(workspace.id);
     return html`
       <div class="action-menu">
+        ${renderPinToggle(this.pins, workspace.id, label)}
         <button
           class="action-menu-toggle"
           title="Workspace actions and details"
@@ -315,7 +327,7 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
     this.renderRoot.querySelector<HTMLElement>(".action-row.selected")?.scrollIntoView({ block: "nearest" });
   }
 
-  static override styles = [listStyles, css`
+  static override styles = [listStyles, pinnedListStyles, css`
     .workspace-menu-trust { display: flex; flex-direction: column; gap: 3px; padding: 4px 2px; }
     .workspace-menu-trust-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .workspace-menu-trust label { display: flex; align-items: center; gap: 6px; cursor: pointer; }

@@ -6,6 +6,7 @@ import { actionMenuPanelStyle } from "./actionMenu";
 import { hasStatusUnread, renderActionActivityIndicator, statusActivityKind } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
+import { PinnedListController, pinnedListStyles, renderPinToggle } from "../pinnedList";
 import { listStyles } from "./shared";
 
 @customElement("project-list")
@@ -24,6 +25,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
   @state() private openMenuProjectId: string | undefined;
   @state() private menuStyle = "";
+  private readonly pins = new PinnedListController(this, "pi-web:pinned-projects");
   private readonly onDocumentClick = (event: MouseEvent) => {
     if (event.composedPath().includes(this)) return;
     this.openMenuProjectId = undefined;
@@ -50,36 +52,48 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   }
 
   override render() {
+    const { pinned, rest } = this.pins.partition(this.projects, (project) => project.id);
     return html`
       <section>
         <h2>${this.renderHeading()}</h2>
         ${this.collapsed ? null : html`
           <div class="list-body">
-            ${this.projects.map((project) => html`
-              <div
-                class=${`action-row ${this.selected?.id === project.id ? "selected" : ""}`}
-                tabindex="0"
-                title=${project.path}
-                @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(project)); }}
-                @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
-              >
-                <div class="action-main">
-                  <span class="workspace-primary"><span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
-                  ${this.renderActivity(project)}
-                </div>
-                <div class="action-menu">
-                  <button class="action-menu-toggle" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
-                  ${this.openMenuProjectId === project.id ? html`
-                    <div class="action-menu-panel" style=${this.menuStyle}>
-                      <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
-                    </div>
-                  ` : null}
-                </div>
-              </div>
-            `)}
+            ${pinned.map((project) => this.renderProject(project, true))}
+            ${rest.map((project) => this.renderProject(project, false))}
           </div>
         `}
       </section>
+    `;
+  }
+
+  private renderProject(project: Project, pinned: boolean) {
+    return html`
+      <div
+        class=${`action-row ${this.selected?.id === project.id ? "selected" : ""} ${pinned ? "pinned" : ""} ${pinned && this.pins.dragOverId === project.id ? "drag-over" : ""} ${pinned && this.pins.dragId === project.id ? "dragging" : ""}`}
+        tabindex="0"
+        title=${project.path}
+        .draggable=${pinned}
+        @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(project)); }}
+        @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
+        @dragstart=${(event: DragEvent) => { this.pins.handleDragStart(event, project.id); }}
+        @dragover=${(event: DragEvent) => { this.pins.handleDragOver(event, project.id); }}
+        @drop=${(event: DragEvent) => { this.pins.handleDrop(event, project.id); }}
+        @dragend=${() => { this.pins.handleDragEnd(); }}
+      >
+        <div class="action-main">
+          <span class="workspace-primary"><span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
+          ${this.renderActivity(project)}
+        </div>
+        <div class="action-menu">
+          ${renderPinToggle(this.pins, project.id, project.name)}
+          <button class="action-menu-toggle" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
+          ${this.openMenuProjectId === project.id ? html`
+            <div class="action-menu-panel" style=${this.menuStyle}>
+              <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
+            </div>
+          ` : null}
+        </div>
+      </div>
     `;
   }
 
@@ -120,5 +134,5 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
     if (confirm(`Close ${project.name}?\n\nThis only removes it from PI WEB; it will not change the project folder.`)) this.onClose?.(project);
   }
 
-  static override styles = listStyles;
+  static override styles = [listStyles, pinnedListStyles];
 }

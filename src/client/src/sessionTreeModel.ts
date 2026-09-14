@@ -106,7 +106,11 @@ export function buildSessionTreeModel(snapshot: SessionTreeSnapshot): SessionTre
   return { nodesById, orderedIds, rootIds, parentById, childrenById, depthById, branchDepthById, activePathIds, activeLeafId };
 }
 
-export function visibleSessionTreeRows(model: SessionTreeModel, foldedIds: ReadonlySet<string>): SessionTreeRow[] {
+export function visibleSessionTreeRows(
+  model: SessionTreeModel,
+  foldedIds: ReadonlySet<string>,
+  isVisible: (node: SessionTreeNode) => boolean = () => true,
+): SessionTreeRow[] {
   const rows: SessionTreeRow[] = [];
   const visited = new Set<string>();
   const stack = [...model.rootIds].reverse();
@@ -118,15 +122,20 @@ export function visibleSessionTreeRows(model: SessionTreeModel, foldedIds: Reado
     if (node === undefined) continue;
     visited.add(id);
     const childIds = model.childrenById.get(id) ?? [];
-    rows.push({
-      node,
-      depth: model.depthById.get(id) ?? 0,
-      branchDepth: model.branchDepthById.get(id) ?? 0,
-      parentId: model.parentById.get(id) ?? null,
-      childIds,
-      activePath: model.activePathIds.has(id),
-      activeLeaf: model.activeLeafId === id,
-    });
+    // Filtered-out nodes still pass children through: history is mostly a
+    // linear chain, so hiding tool/metadata entries must not orphan the
+    // conversation entries below them.
+    if (isVisible(node)) {
+      rows.push({
+        node,
+        depth: model.depthById.get(id) ?? 0,
+        branchDepth: model.branchDepthById.get(id) ?? 0,
+        parentId: model.parentById.get(id) ?? null,
+        childIds,
+        activePath: model.activePathIds.has(id),
+        activeLeaf: model.activeLeafId === id,
+      });
+    }
     if (foldedIds.has(id)) continue;
     for (let index = childIds.length - 1; index >= 0; index -= 1) {
       const childId = childIds[index];
@@ -137,13 +146,23 @@ export function visibleSessionTreeRows(model: SessionTreeModel, foldedIds: Reado
   return rows;
 }
 
-export function initialSessionTreeSelection(model: SessionTreeModel): string | undefined {
-  if (model.activeLeafId !== null) return model.activeLeafId;
-  return model.orderedIds.at(-1);
+export function initialSessionTreeSelection(model: SessionTreeModel, isVisible?: (node: SessionTreeNode) => boolean): string | undefined {
+  if (isVisible === undefined) {
+    if (model.activeLeafId !== null) return model.activeLeafId;
+    return model.orderedIds.at(-1);
+  }
+  const rows = visibleSessionTreeRows(model, new Set(), isVisible);
+  if (model.activeLeafId !== null && rows.some((row) => row.node.id === model.activeLeafId)) return model.activeLeafId;
+  return rows.at(-1)?.node.id;
 }
 
-export function transitionSessionTreeKey(model: SessionTreeModel, state: SessionTreeKeyState, key: string): SessionTreeKeyTransition {
-  const rows = visibleSessionTreeRows(model, state.foldedIds);
+export function transitionSessionTreeKey(
+  model: SessionTreeModel,
+  state: SessionTreeKeyState,
+  key: string,
+  isVisible?: (node: SessionTreeNode) => boolean,
+): SessionTreeKeyTransition {
+  const rows = visibleSessionTreeRows(model, state.foldedIds, isVisible);
   const visibleIds = rows.map((row) => row.node.id);
   const selectedId = normalizedVisibleSelection(visibleIds, state.selectedId);
   const selectedIndex = selectedId === undefined ? -1 : visibleIds.indexOf(selectedId);

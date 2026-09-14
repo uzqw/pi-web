@@ -4,9 +4,9 @@ import { createSpawnSessionToolDefinition } from "./spawnSessionTool.js";
 
 const dispatchModel = { provider: "anthropic", id: "claude-sonnet" };
 
-function ctxFor(sessionId: string, model?: unknown, thinkingLevel?: string): ExtensionContext {
-  const sessionManager = { getSessionId: () => sessionId };
-  // The spawn tool only reads sessionManager.getSessionId, model, and thinkingLevel.
+function ctxFor(sessionId: string, model?: unknown, thinkingLevel?: string, sessionFile?: string): ExtensionContext {
+  const sessionManager = { getSessionId: () => sessionId, getSessionFile: () => sessionFile };
+  // The spawn tool only reads sessionManager.getSessionId/getSessionFile, model, and thinkingLevel.
   // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- test stub with the minimal surface the tool reads.
   return { sessionManager, ...(model === undefined ? {} : { model }), ...(thinkingLevel === undefined ? {} : { thinkingLevel }) } as unknown as ExtensionContext;
 }
@@ -16,9 +16,9 @@ describe("createSpawnSessionToolDefinition", () => {
     const spawn = vi.fn(() => Promise.resolve({ sessionId: "new-1", cwd: "/repos/a-feature" }));
     const tool = createSpawnSessionToolDefinition("/repos/a", { spawn });
 
-    const result = await tool.execute("call-1", { prompt: "do the thing", cwd: "/repos/a-feature" }, undefined, undefined, ctxFor("spawner-1", dispatchModel, "high"));
+    const result = await tool.execute("call-1", { prompt: "do the thing", cwd: "/repos/a-feature" }, undefined, undefined, ctxFor("spawner-1", dispatchModel, "high", "/sessions/spawner-1.jsonl"));
 
-    expect(spawn).toHaveBeenCalledWith({ spawningCwd: "/repos/a", spawningSessionId: "spawner-1", prompt: "do the thing", cwd: "/repos/a-feature", model: dispatchModel, thinkingLevel: "high" });
+    expect(spawn).toHaveBeenCalledWith({ spawningCwd: "/repos/a", spawningSessionId: "spawner-1", spawningSessionFile: "/sessions/spawner-1.jsonl", prompt: "do the thing", cwd: "/repos/a-feature", model: dispatchModel, thinkingLevel: "high" });
     expect(result.details).toEqual({ sessionId: "new-1", cwd: "/repos/a-feature" });
     expect(result.content[0]).toMatchObject({ type: "text", text: "Started independent session new-1 in /repos/a-feature." });
   });

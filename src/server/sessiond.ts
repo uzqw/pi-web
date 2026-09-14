@@ -48,6 +48,7 @@ import { dockerEnvironmentPromptSections } from "./sessions/dockerEnvironmentFac
 import { PI_WEB_SESSION_ENV, sessionEnvironmentPromptSections } from "./sessions/sessionEnvironmentFacts.js";
 import { createServerPluginExecFile } from "./plugins/serverPluginExec.js";
 import { createServerPluginRuntime } from "./plugins/serverPluginRuntime.js";
+import { installFatalErrorGuards } from "./sessiond/fatalErrorGuards.js";
 import { runSessionDaemonShutdown } from "./sessiond/sessionDaemonShutdown.js";
 import { sessionServiceDependencies } from "./sessiond/sessionServiceDependencies.js";
 import { registerWorkspaceCatalogRoutes } from "./sessiond/workspaceCatalogRoutes.js";
@@ -121,6 +122,12 @@ async function requestShutdown(signal: NodeJS.Signals): Promise<void> {
 }
 process.once("SIGINT", (signal) => { void requestShutdown(signal); });
 process.once("SIGTERM", (signal) => { void requestShutdown(signal); });
+
+// Agent model streams reject with abort/timeout/socket errors that can escape
+// every local catch (e.g. a provider fetch aborted mid-teardown). Node's
+// default response kills the daemon and every session it hosts, so log and
+// keep serving instead; the affected session already sees the provider error.
+installFatalErrorGuards({ logger: app.log });
 
 // Agent-executed processes (bash tool, terminals, subsessions) are spawned from
 // this process and inherit its environment. The scrub removes only the keys

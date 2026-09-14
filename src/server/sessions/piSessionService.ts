@@ -3800,6 +3800,9 @@ export class PiSessionService implements SessionRouteService {
       this.events.publish(session.sessionId, toClientEvent(event, session.thinkingLevel));
       this.publishActivityForEvent(session, event);
       const eventType = getString(event, "type");
+      // Extensions rename sessions via `pi.setSessionName`, which emits
+      // `session_info_changed`; browsers only understand `session.name`.
+      if (eventType === "session_info_changed") this.publishSessionName(session);
       if (eventType === "agent_end") this.abortRunScopedExtensionDialogs(session.sessionId);
       if (eventType === "compaction_end") this.scheduleCompactionQueueDrain(session.sessionId);
       if (eventType === "agent_start" || eventType === "agent_end") this.scheduleCompactionQueueDrain(session.sessionId);

@@ -126,6 +126,27 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
+  it("publishes session.name when an extension renames the session", async () => {
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime("rename-session");
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("rename-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+    fake.session.sessionName = "Extension-renamed";
+    fake.emit({ type: "session_info_changed", name: "Extension-renamed" });
+
+    const named = hub.sessionEvents.filter(({ event }) => event.type === "session.name");
+    expect(named.at(-1)?.event).toEqual({ type: "session.name", sessionId: "rename-session", name: "Extension-renamed" });
+    expect(hub.globalEvents.some((event) => event.type === "session.name" && event.sessionId === "rename-session" && event.name === "Extension-renamed")).toBe(true);
+    await service.dispose();
+  });
+
   it("includes queued message details in session status", async () => {
     const fake = fakeRuntime("status-session", {
       messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "hi" }],

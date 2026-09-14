@@ -61,8 +61,8 @@ export function fakeSessionManager(cwd = "/workspace", patch: Partial<PiSessionM
   };
 }
 
-export function sessionRecord(id: string, cwd = "/workspace") {
-  return { id, path: `/sessions/${id}.jsonl`, cwd, created: new Date("2026-01-01T00:00:00.000Z"), modified: new Date("2026-01-01T00:01:00.000Z"), messageCount: 0, firstMessage: "", allMessagesText: "" };
+export function sessionRecord(id: string, cwd = "/workspace", patch: Partial<PiSessionListEntry> = {}) {
+  return { id, path: `/sessions/${id}.jsonl`, cwd, created: new Date("2026-01-01T00:00:00.000Z"), modified: new Date("2026-01-01T00:01:00.000Z"), messageCount: 0, firstMessage: "", allMessagesText: "", ...patch };
 }
 
 export function sessionRef(id: string, cwd = "/workspace") {

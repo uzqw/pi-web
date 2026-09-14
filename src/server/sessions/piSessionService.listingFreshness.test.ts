@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionService } from "./piSessionService.js";
 import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
-import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionRef, testModelRuntime } from "./piSessionService.testSupport.js";
+import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime } from "./piSessionService.testSupport.js";
 
 const TEST_AGENT_DIR = "/tmp/pi-web-test-agent";
 const LISTING_CWD = "/srv/dev/pi-web";
@@ -142,6 +142,58 @@ describe("PiSessionService.detachParent summary memo", () => {
     const detached = after.find((session) => session.id === "child");
     expect(detached).toMatchObject({ id: "child", messageCount: 2 });
     expect(detached).not.toHaveProperty("parentSessionPath");
+    await service.dispose();
+  });
+});
+
+describe("PiSessionService listing of live session names", () => {
+  it("keeps a name that only exists in memory before the first assistant message", async () => {
+    // The SDK writes nothing to a transcript until the first assistant message,
+    // so a renamed brand-new session has no file, no listing entry, and only an
+    // in-memory name. Serving the side bar from the disk scan alone reverts the
+    // row to its session id until that first message flushes the file.
+    const fake = fakeRuntime("unflushed-session");
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      archiveStore: emptyArchiveStore(),
+      sessionManager: sessionGateway([]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+    fake.session.sessionName = "【#1-30 写周报】";
+
+    const listed = await service.list("/workspace");
+    expect(listed.find((session) => session.id === "unflushed-session")).toMatchObject({
+      id: "unflushed-session",
+      name: "【#1-30 写周报】",
+      persisted: false,
+    });
+    await service.dispose();
+  });
+
+  it("prefers the in-memory name over the one scanned from an older transcript", async () => {
+    const fake = fakeRuntime("rename-session");
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      archiveStore: emptyArchiveStore(),
+      sessionManager: sessionGateway([sessionRecord("rename-session", "/workspace", { name: "Old name" })]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+    fake.session.sessionName = "New name";
+
+    const listed = await service.list("/workspace");
+    expect(listed.find((session) => session.id === "rename-session")).toMatchObject({
+      id: "rename-session",
+      name: "New name",
+      persisted: true,
+    });
     await service.dispose();
   });
 });

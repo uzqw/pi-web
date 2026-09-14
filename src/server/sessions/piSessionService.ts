@@ -1457,7 +1457,10 @@ export class PiSessionService implements SessionRouteService {
     for (const record of archivedForCwd) {
       this.publishNotificationMutations(this.notificationStore.clearSession(record.sessionId, "archive-reconcile"));
     }
-    const unarchivedSessions = sessions.filter((session) => !archivedById.has(session.id)).map(clientSessionFromListEntry);
+    const unarchivedSessions = this.withLiveSessions(
+      cwd,
+      sessions.filter((session) => !archivedById.has(session.id)).map(clientSessionFromListEntry),
+    );
     const reconcilableSessionIds = this.reconcilableSessionIds(cwd, unarchivedSessions.map((session) => session.id), archivedById);
     this.workspaceActivity?.reconcileSessionActivity(cwd, reconcilableSessionIds);
     await this.publishUnreadMutations(this.unreadStore.reconcileCwd(canonicalizeStoredCwd(cwd), reconcilableSessionIds));
@@ -3163,6 +3166,39 @@ export class PiSessionService implements SessionRouteService {
       if (session.sessionManager.getCwd() === cwd && !archivedById.has(session.sessionId)) sessionIds.add(session.sessionId);
     }
     return [...sessionIds];
+  }
+
+  /**
+   * Overlay this daemon's live sessions for `cwd` onto a disk-derived listing.
+   *
+   * A transcript is not written until its first assistant message (the SDK keeps
+   * the header, `session_info`, and user entries in memory until then), so a
+   * brand-new session has no file to scan: its display name — and the row itself
+   * — exist only in memory. The live session is authoritative for its own
+   * entries, and one with no file yet belongs in the listing rather than
+   * appearing only from a browser's own cache.
+   */
+  private withLiveSessions(cwd: string, listed: readonly ClientSession[]): ClientSession[] {
+    const live = new Map<string, PiAgentSession>();
+    for (const active of new Set(this.active.values())) {
+      const session = active.runtime.session;
+      if (session.sessionManager.getCwd() === cwd) live.set(session.sessionId, session);
+    }
+    if (live.size === 0) return [...listed];
+    const merged = listed.map((entry) => {
+      const session = live.get(entry.id);
+      if (session === undefined) return entry;
+      live.delete(entry.id);
+      // The scanner's name comes from a file that can predate the rename (and,
+      // before the first assistant message, from no file at all).
+      const next = { ...entry };
+      delete next.name;
+      if (session.sessionName !== undefined) next.name = session.sessionName;
+      return next;
+    });
+    // Anything left has no file the scanner could see.
+    for (const session of live.values()) merged.unshift({ ...projectSessionInfo(cwd, session), persisted: false });
+    return merged;
   }
 
   private async archiveInputForSession(session: PiAgentSession): Promise<ArchiveSessionInput> {

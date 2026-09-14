@@ -339,9 +339,28 @@ export class SessionController {
     // session even if the user navigates elsewhere mid-upload.
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
+    // A prompt sent while the session is busy is queued by the daemon, and the
+    // daemon only echoes immediately-submitted prompts. The queue panel is a
+    // queued message's authoritative display, so an optimistic transcript row
+    // would double-render it and then vanish on the next transcript refresh
+    // (which rebuilds from server history alone). A composer that submitted
+    // just before the status learned the session was busy still gets one; the
+    // queued status retracts it (see retractQueuedOptimisticPromptRows).
+    const optimistic = !hasAttachments && !this.promptWillBeQueued(streamingBehavior);
     await this.deliverWithDedup(session.id, "prompt", trimmed, streamingBehavior, attachments, async () => {
-      await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, folder, machineId, { markSending: true, optimistic: !hasAttachments }, errorOwner);
+      await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, folder, machineId, { markSending: true, optimistic }, errorOwner);
     });
+  }
+
+  /**
+   * Whether the daemon will queue this prompt instead of submitting it now: a
+   * busy session (streaming or compacting) queues, and the composer only passes
+   * a streaming behavior for a session it already knows is busy.
+   */
+  private promptWillBeQueued(streamingBehavior: "steer" | "followUp" | undefined): boolean {
+    if (streamingBehavior !== undefined) return true;
+    const status = this.getState().status;
+    return status?.isStreaming === true || status?.isCompacting === true;
   }
 
   /**
@@ -1613,8 +1632,10 @@ export class SessionController {
     const state = this.getState();
     const isSelected = state.selectedSession?.id === status.sessionId;
     const clearsStaleActivity = state.sessionActivities[status.sessionId]?.phase === "active" && !isSessionActive(status);
+    const messages = isSelected ? retractQueuedOptimisticPromptRows(state.messages, status.queuedMessages) : undefined;
     this.setState({
       sessionStatuses: { ...state.sessionStatuses, [status.sessionId]: status },
+      ...(messages === undefined ? {} : { messages }),
       ...sessionMessageCountPatch(state, status.sessionId, status.messageCount),
       ...(clearsStaleActivity ? { sessionActivities: omitSessionActivity(state.sessionActivities, status.sessionId) } : {}),
       status: isSelected ? status : state.status,
@@ -2023,6 +2044,21 @@ function failedPendingSessionActivity(sessionId: string, message: string, queued
     detail: `${message}${queuedDetail}`,
     at: new Date().toISOString(),
   };
+}
+
+/**
+ * Drop optimistic rows for prompts the daemon reports as queued. A queued
+ * steer/follow-up is displayed by the queue panel and is never echoed into the
+ * transcript, so an unacknowledged row for the same text is a phantom: the
+ * composer inserted it before the status said "busy". The queued status is
+ * authoritative, so those rows go.
+ *
+ * Returns `undefined` when nothing was retracted, so callers can skip the patch.
+ */
+function retractQueuedOptimisticPromptRows(messages: AppState["messages"], queuedMessages: readonly QueuedSessionMessage[]): AppState["messages"] | undefined {
+  let next = messages;
+  for (const queued of queuedMessages) next = retractUnacknowledgedUserMessage(next, queued.text);
+  return next === messages ? undefined : next;
 }
 
 function queuedSessionMessagePreview(queued: QueuedPendingSessionSend): QueuedSessionMessage {

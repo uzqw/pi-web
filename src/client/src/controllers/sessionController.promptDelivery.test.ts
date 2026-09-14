@@ -90,6 +90,57 @@ describe("SessionController prompt delivery", () => {
     await send;
   });
 
+  it("does not show an optimistic row for a prompt the daemon will queue", async () => {
+    let resolvePrompt: (() => void) | undefined;
+    const state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession], status: { ...status(oldSession.id), isStreaming: true, pendingMessageCount: 1 } };
+    const { controller, state: getState } = controllerWith(state, {
+      prompt: () => new Promise<{ accepted: true }>((resolve) => { resolvePrompt = () => { resolve({ accepted: true }); }; }),
+    });
+
+    const send = controller.send("hello", "followUp");
+
+    // The queue panel owns the row; a transcript row here would double-render it.
+    expect(userTexts(getState())).toEqual([]);
+
+    resolvePrompt?.();
+    await send;
+  });
+
+  it("retracts the optimistic row once the daemon reports the prompt queued", async () => {
+    let resolvePrompt: (() => void) | undefined;
+    const state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const { controller, socket, state: getState } = controllerWith(state, {
+      messages: () => Promise.resolve(emptyPage),
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      prompt: () => new Promise<{ accepted: true }>((resolve) => { resolvePrompt = () => { resolve({ accepted: true }); }; }),
+    });
+    await controller.selectSession(oldSession, { updateUrl: false });
+
+    const send = controller.send("hello");
+    expect(userTexts(getState())).toEqual(["hello"]);
+
+    // The composer submitted before the status learned the session was busy.
+    socket.emit({ type: "status.update", status: { ...status(oldSession.id), isStreaming: true, pendingMessageCount: 1, queuedMessages: [{ kind: "followUp", text: "hello" }] } });
+    runPendingAnimationFrames();
+
+    expect(userTexts(getState())).toEqual([]);
+
+    resolvePrompt?.();
+    await send;
+  });
+
+  it("keeps an acknowledged row when the daemon reports the same text queued", () => {
+    const state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession], status: status(oldSession.id), messages: [{ role: "user", parts: [{ type: "text", text: "hello" }], meta: { timestamp: "2026-01-01T00:00:00.000Z" } }] };
+    const { socket, state: getState } = controllerWith(state, {});
+
+    socket.emit({ type: "status.update", status: { ...status(oldSession.id), isStreaming: true, pendingMessageCount: 1, queuedMessages: [{ kind: "followUp", text: "hello" }] } });
+    runPendingAnimationFrames();
+
+    // A server-echoed row is not optimistic, so the queue cannot retract it.
+    expect(userTexts(getState())).toEqual(["hello"]);
+  });
+
   it("keeps the optimistic row when a failed send actually landed", async () => {
     const state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
     const { controller, state: getState } = controllerWith(state, {

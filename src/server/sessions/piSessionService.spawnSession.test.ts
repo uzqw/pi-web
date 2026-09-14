@@ -124,6 +124,56 @@ describe("PiSessionService", () => {
       await service.dispose();
     });
 
+    it("records the spawning session file as the spawned session's parent", async () => {
+      const createCalls: { cwd: string; options: { parentSession?: string } | undefined }[] = [];
+      const gateway = sessionGateway([]);
+      const fake = fakeRuntime("spawned-1", { sessionFile: "/tmp/spawned-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        agentDir: TEST_AGENT_DIR,
+        modelRuntime: testModelRuntime,
+        createAgentRuntime: runtimeCreator(fake.runtime),
+        sessionManager: {
+          ...gateway,
+          create: (cwd: string, options?: { parentSession?: string }) => {
+            createCalls.push({ cwd, options });
+            return gateway.create(cwd, options);
+          },
+        },
+        spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true as const, cwd: "/workspace-feature" }) },
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "spawner-1", spawningSessionFile: "/sessions/spawner-1.jsonl", prompt: "go", cwd: "/workspace-feature" });
+
+      expect(createCalls).toEqual([{ cwd: "/workspace-feature", options: { parentSession: "/sessions/spawner-1.jsonl" } }]);
+      await service.dispose();
+    });
+
+    it("omits the parent when the spawning session has no session file", async () => {
+      const createCalls: { cwd: string; options: { parentSession?: string } | undefined }[] = [];
+      const gateway = sessionGateway([]);
+      const fake = fakeRuntime("spawned-1", { sessionFile: "/tmp/spawned-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        agentDir: TEST_AGENT_DIR,
+        modelRuntime: testModelRuntime,
+        createAgentRuntime: runtimeCreator(fake.runtime),
+        sessionManager: {
+          ...gateway,
+          create: (cwd: string, options?: { parentSession?: string }) => {
+            createCalls.push({ cwd, options });
+            return gateway.create(cwd, options);
+          },
+        },
+        spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true as const, cwd: "/workspace-feature" }) },
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "spawner-1", prompt: "go", cwd: "/workspace-feature" });
+
+      expect(createCalls).toEqual([{ cwd: "/workspace-feature", options: undefined }]);
+      await service.dispose();
+    });
+
     it("rejects an out-of-project target without starting a session", async () => {
       const { fake, service } = spawnService({ allowed: false, reason: "out-of-project", allowedCwds: ["/workspace"] });
 

@@ -88,6 +88,7 @@ describe("delegation tool capability boundary", () => {
     expect(spawn).toHaveBeenCalledWith({
       spawningCwd: "/workspace",
       spawningSessionId: "spawner-7",
+      spawningSessionFile: "/sessions/spawner-7.jsonl",
       prompt: "go",
       cwd: undefined,
       model: dispatchModel,

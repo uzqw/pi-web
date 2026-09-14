@@ -15,6 +15,8 @@ export interface SpawnSessionInvocation {
   spawningCwd: string;
   /** Id of the dispatching session; used to resolve {@link modelSpec} against its model runtime. */
   spawningSessionId: string;
+  /** Session file of the dispatching session, recorded as the spawned session's parent so session_start handlers can inherit parent state (e.g. task links). */
+  spawningSessionFile?: string;
   prompt: string;
   cwd: string | undefined;
   /** Current model from the dispatching session, used as the spawned session's default. */
@@ -60,6 +62,7 @@ export function createSpawnSessionToolDefinition(spawningCwd: string, deps: Spaw
       // Failures throw: the agent loop turns the thrown message into an error
       // tool result the model sees, so the spawning agent can adapt (e.g. pick a
       // valid workspace) rather than crash.
+      const sessionFile = ctx.sessionManager.getSessionFile();
       const result = await deps.spawn({
         spawningCwd,
         spawningSessionId: ctx.sessionManager.getSessionId(),
@@ -68,6 +71,7 @@ export function createSpawnSessionToolDefinition(spawningCwd: string, deps: Spaw
         ...(ctx.model === undefined ? {} : { model: ctx.model }),
         ...(params.model === undefined ? {} : { modelSpec: params.model }),
         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
+        ...(sessionFile === undefined ? {} : { spawningSessionFile: sessionFile }),
       });
       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
       return {

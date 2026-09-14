@@ -21,6 +21,28 @@ describe("statusBarWarningControlContent", () => {
   });
 });
 
+describe("context usage display", () => {
+  it("renders used/contextWindow followed by percent", () => {
+    const statusBar = new StatusBar();
+    statusBar.status = { ...status(), contextUsage: { tokens: 63_000, contextWindow: 262_144, percent: 24 } };
+
+    const template = renderStatusBar(statusBar);
+    const contextValue = template.values.find((value) => typeof value === "string" && value.includes("/262k"));
+
+    expect(contextValue).toBe("63k/262k 24.0%");
+  });
+
+  it("falls back to the window size when used tokens are unknown", () => {
+    const statusBar = new StatusBar();
+    statusBar.status = { ...status(), contextUsage: { tokens: null, contextWindow: 262_144, percent: null } };
+
+    const template = renderStatusBar(statusBar);
+    const contextValue = template.values.find((value) => typeof value === "string" && value.includes("262k"));
+
+    expect(contextValue).toBe("context 262k");
+  });
+});
+
 describe("StatusBar warning toggle wiring", () => {
   // Escape hatch: this specifically verifies the compact status-bar button's
   // Lit callback wiring in the node environment, anchored to its semantic class.

@@ -34,9 +34,9 @@ export class StatusBar extends LitElement {
     if (status === undefined) return html`<div class="bar muted">No session status yet</div>`;
     const context = status.contextUsage;
     const contextText = context
-      ? context.percent == null
+      ? context.tokens == null
         ? `context ${formatTokenCount(context.contextWindow)}`
-        : `${context.percent.toFixed(1)}%/${formatTokenCount(context.contextWindow)}`
+        : `${formatTokenCount(context.tokens)}/${formatTokenCount(context.contextWindow)}${context.percent == null ? "" : ` ${context.percent.toFixed(1)}%`}`
       : "context unknown";
     const tokens = status.tokens;
     const warningControl = statusBarWarningControlContent(this.warningCount, this.warningsExpanded);

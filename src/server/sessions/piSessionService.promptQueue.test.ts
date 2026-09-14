@@ -411,6 +411,11 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
   });
 
   it("refreshes auth state and dedupes warnings when logout removes the current model's credentials", async () => {
+    // Ambient env credentials would keep `hasConfiguredAuth` true after the stored
+    // credential is deleted, so the warning under test would never fire.
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", undefined);
+    vi.stubEnv("ANTHROPIC_OAUTH_TOKEN", undefined);
+    vi.stubEnv("ANTHROPIC_API_KEY", undefined);
     const hub = new CapturingSessionEventHub();
     // The shared model runtime reads a live credential store. Mutating the store
     // and refreshing here simulates the committed snapshot that

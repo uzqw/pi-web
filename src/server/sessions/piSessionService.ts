@@ -3401,7 +3401,13 @@ export class PiSessionService implements SessionRouteService {
     // workspace. `getActive` routes prompt/shell/runCommand, so coupling it to
     // the listing would let an in-flight listing serialize unrelated sends.
     const match = await this.sessionManager.resolveSessionFile(ref.cwd, ref.id);
-    if (!match) throw new Error("Session not found");
+    if (!match) {
+      // 磁盘和 active 都没有：可能是从未落盘的会话（如 handoff 中断）。
+      // list 内部会 reconcile 该 cwd 的 unread/active 状态，让幽灵记录即时收敛，
+      // 而不是等浏览器下一次刷新列表。
+      void this.list(ref.cwd).catch(() => undefined);
+      throw new Error("Session not found");
+    }
     return this.openExistingSession(match.id, match.cwd, () => this.sessionManager.open(match.path), options);
   }
 

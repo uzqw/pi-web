@@ -258,4 +258,23 @@ describe("buildApp project routes", () => {
       expect(workspace.effectiveConfig).toMatchObject({ attachments: { defaultFolder: "project-attachments" } });
     }
   });
+
+  it("reports the workspace git branch, or null when the checkout has none", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Branchy", path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.workspaceCatalog.resolveProject(project.id)).workspaces[0];
+    if (workspace === undefined) throw new Error("Expected a main workspace");
+
+    // The temp project dir is not a git checkout, so the branch is null but the request still succeeds.
+    const branchResponse = await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/${workspace.id}/branch` });
+    expect(branchResponse.statusCode).toBe(200);
+    expect(branchResponse.json()).toEqual({ branch: null });
+
+    const missingResponse = await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces/no-such-workspace/branch` });
+    expect(missingResponse.statusCode).toBe(404);
+  });
 });

@@ -10,6 +10,7 @@ import { ProjectService } from "./projects/projectService.js";
 import type { WorkspaceCatalog } from "./workspaces/workspaceCatalog.js";
 import { SessionDaemonWorkspaceCatalog } from "./workspaces/sessionDaemonWorkspaceCatalog.js";
 import { sendWorkspaceRequestError } from "./workspaces/workspaceRouteErrors.js";
+import { gitBranch } from "./git/gitBranch.js";
 import { loadEffectiveProjectAttachmentsConfig, loadEffectiveProjectUploadsConfig } from "./workspaces/projectPiWebConfig.js";
 import { listDirectorySuggestions } from "./projects/directorySuggestions.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
@@ -88,6 +89,18 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
       return await listDirectorySuggestions(request.query.q ?? "");
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get<{ Params: { projectId: string; workspaceId: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/branch`, async (request, reply) => {
+    try {
+      const project = await projects.requireProject(request.params.projectId);
+      const resolution = await workspaces.resolveProject(project.id);
+      const workspace = resolution.workspaces.find((candidate) => candidate.id === request.params.workspaceId);
+      if (workspace === undefined) return await reply.code(404).send({ error: "Workspace not found" });
+      return { branch: await gitBranch(workspace.path) };
+    } catch (error) {
+      return sendWorkspaceRequestError(reply, error, 404);
     }
   });
 

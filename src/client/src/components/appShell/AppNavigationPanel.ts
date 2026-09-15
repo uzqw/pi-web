@@ -1,5 +1,6 @@
-import { LitElement, css, html } from "lit";
-import { customElement, property, query } from "lit/decorators.js";
+import { LitElement, css, html, type PropertyValues } from "lit";
+import { customElement, property, query, state } from "lit/decorators.js";
+import { workspacesApi } from "../../api";
 import type { Machine, MachineHealth, Project, SessionActivity, SessionInfo, SessionStatus, Workspace } from "../../api";
 import type { MachineStatusSnapshot, StatusFlags } from "../../../../shared/machineStatus";
 import { rollUpStatusFlags } from "../../../../shared/machineStatus";
@@ -104,6 +105,9 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) machineStatusSnapshots: Record<string, MachineStatusSnapshot> = {};
   @property({ attribute: false }) projects: Project[] = [];
   @property({ attribute: false }) selectedProject?: Project;
+  /** Current git branch of the selected workspace, fetched on selection change. */
+  @state() private workspaceBranch: string | null = null;
+  private branchRequestId = 0;
   @property({ attribute: false }) workspaces: Workspace[] = [];
   @property({ attribute: false }) selectedWorkspace?: Workspace;
   @property({ attribute: false }) sessions: SessionInfo[] = [];
@@ -178,10 +182,30 @@ export class AppNavigationPanel extends LitElement {
     }
   }
 
+  override willUpdate(changed: PropertyValues) {
+    if (changed.has("selectedProject") || changed.has("selectedWorkspace") || changed.has("selectedMachine")) this.refreshWorkspaceBranch();
+  }
+
+  private refreshWorkspaceBranch(): void {
+    const { selectedProject: project, selectedWorkspace: workspace, selectedMachine: machine } = this;
+    const requestId = ++this.branchRequestId;
+    if (project === undefined || workspace === undefined) {
+      this.workspaceBranch = null;
+      return;
+    }
+    workspacesApi.workspaceBranch(project.id, workspace.id, machine?.id ?? "local")
+      .then(({ branch }) => {
+        if (requestId === this.branchRequestId) this.workspaceBranch = branch;
+      })
+      .catch(() => {
+        if (requestId === this.branchRequestId) this.workspaceBranch = null;
+      });
+  }
+
   override render() {
     return html`
       <header>
-        <strong>${this.selectedProject?.name ?? "PI WEB"}</strong>
+        <strong>${this.selectedProject?.name ?? "PI WEB"}${this.workspaceBranch === null ? "" : html`<span class="header-branch" title="Current git branch"> ⎇ ${this.workspaceBranch}</span>`}</strong>
         <machine-switcher
           .machines=${this.machines}
           .selected=${this.selectedMachine}
@@ -437,6 +461,7 @@ export class AppNavigationPanel extends LitElement {
     :host([compact]) { flex: 1 1 auto; }
     header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-bottom: 1px solid var(--pi-border); }
     header strong { flex: 0 0 auto; }
+    .header-branch { font-weight: normal; color: var(--pi-dim); }
     machine-switcher { flex: 1 1 auto; min-width: 0; }
     :host([compact]) header { display: none; }
     .header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }

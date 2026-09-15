@@ -54,6 +54,7 @@ import {
   parseTerminalInfo,
   parseThinkingLevelsResponse,
   parseWriteWorkspaceFileResponse,
+  parseWorkspaceBranch,
   parseWorkspaceProviderResolution,
   parseWorkspaceTrustResponse,
   requireMachineStatusSnapshot,
@@ -191,6 +192,7 @@ function workspaceResolution(projectId: string, machineId = "local") {
 
 export const workspacesApi = {
   workspaceResolution,
+  workspaceBranch: (projectId: string, workspaceId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branch`, parseWorkspaceBranch),
   workspaces: async (projectId: string, machineId = "local") => [
     ...(await workspaceResolution(projectId, machineId)).workspaces,
   ],

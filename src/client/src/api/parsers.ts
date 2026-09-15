@@ -2085,6 +2085,14 @@ function parseSavedAttachment(value: unknown): SavedPromptAttachment {
   return { path: requireString(record, "path"), mimeType: requireString(record, "mimeType"), size: requireNumber(record, "size") };
 }
 
+/** Current git branch of a workspace; null when the checkout has none (or the server cannot tell). */
+export function parseWorkspaceBranch(value: unknown): { branch: string | null } {
+  const record = requireRecord(value);
+  const branch = record["branch"];
+  if (branch !== null && typeof branch !== "string") throw new Error("Expected branch field to be a string or null");
+  return { branch };
+}
+
 export function parseClosed(value: unknown): { closed: true } {
   const record = requireRecord(value);
   if (record["closed"] !== true) throw new Error("Expected closed response");

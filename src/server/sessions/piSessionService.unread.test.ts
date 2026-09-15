@@ -110,6 +110,32 @@ describe("PiSessionService daemon-owned unread state", () => {
     }
   });
 
+  it("reconciles ghost unread records when a session resolves to nothing", async () => {
+    const unreadStore = new SessionUnreadStore({ createCatalogId: () => "catalog-test" });
+    // 幽灵记录：unread 里有完成标记，但磁盘和 active 都没有这个 session
+    // （对应从未落盘的 handoff 中断会话）。
+    completeStoreWork(unreadStore, "ghost-session", WORKSPACE_CWD);
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      sessionManager: sessionGateway([]),
+      archiveStore: emptyArchiveStore(),
+      heartbeatIntervalMs: 60_000,
+      unreadStore,
+    });
+
+    try {
+      expect((await service.unreadCatalog()).sessions).toHaveLength(1);
+      await expect(service.status(sessionRef("ghost-session"))).rejects.toThrow("Session not found");
+      // miss 触发的 list→reconcileCwd 是 fire-and-forget，等它收敛
+      await vi.waitFor(async () => {
+        expect((await service.unreadCatalog()).sessions).toEqual([]);
+      });
+    } finally {
+      await service.dispose();
+    }
+  });
+
   it("publishes completion revisions in order only after their captured state is durable", async () => {
     const persistence = new BlockingUnreadPersistence();
     const unreadStore = new SessionUnreadStore({ persistence, createCatalogId: () => "catalog-test" });

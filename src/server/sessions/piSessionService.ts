@@ -1187,6 +1187,8 @@ export class PiSessionService implements SessionRouteService {
   private readonly deferredGeneratedSessionNames = new WeakMap<PiAgentSession, string>();
   private readonly compactionPromptQueues = new Map<string, QueuedPrompt[]>();
   private readonly compactionDrainTimers = new Map<string, NodeJS.Timeout>();
+  /** Session ids that accepted a prompt before the runtime has set `isStreaming`. */
+  private readonly acceptedTurns = new Set<string>();
   private readonly authLossWarnings = new Set<string>();
   /** Tracked subsession id -> the parent session id that spawned it. */
   private readonly subsessionParents = new Map<string, string>();
@@ -1429,6 +1431,7 @@ export class PiSessionService implements SessionRouteService {
     this.startupSessions.clear();
     this.activities.clear();
     this.compactionPromptQueues.clear();
+    this.acceptedTurns.clear();
     this.authLossWarnings.clear();
     this.subsessionParents.clear();
     this.subsessionChildren.clear();
@@ -2487,23 +2490,31 @@ export class PiSessionService implements SessionRouteService {
     const session = await this.getOrOpen(ref);
     this.assertTreeNavigationInactive(session, "send a prompt");
     this.maybeGenerateSessionName(session, promptText);
-    const isQueued = session.isStreaming || session.isCompacting;
-    const behavior = isQueued ? requestedBehavior ?? "followUp" : undefined;
-    if (isQueued && images.length === 0 && this.hasQueuedMessageText(session, promptText)) {
+    const alreadyBusy = session.isStreaming || session.isCompacting || this.acceptedTurns.has(session.sessionId) || this.isSessionEntryMutationActive(session);
+    const behavior = alreadyBusy ? requestedBehavior ?? "followUp" : undefined;
+    if (alreadyBusy && images.length === 0 && this.hasQueuedMessageText(session, promptText)) {
       this.publishActivity(session, "duplicate queued message ignored", "active");
       this.publishStatus(session);
       return;
     }
+    if (!session.isCompacting) this.acceptedTurns.add(session.sessionId);
     // A chat message answers the session's open ask in the user's own words, so
     // the form is void: keeping it open would invite answers to questions the
     // conversation has already moved past. Ignored duplicates skip this on
     // purpose: they must not void an ask posted after the queued original.
-    await this.voidOpenAskForUserMessage(session);
-    if (session.isCompacting) {
-      this.enqueuePromptDuringCompaction(session, promptText, behavior ?? "followUp", images, echoUserMessage);
-      return;
+    try {
+      await this.voidOpenAskForUserMessage(session);
+      if (session.isCompacting || (alreadyBusy && !session.isStreaming)) {
+        if (session.isCompacting) this.acceptedTurns.delete(session.sessionId);
+        this.enqueuePromptDuringCompaction(session, promptText, behavior ?? "followUp", images, echoUserMessage);
+        return;
+      }
+      this.publishStatus(session);
+      void this.submitPrompt(session, promptText, behavior, images, echoUserMessage);
+    } catch (error) {
+      if (!alreadyBusy) this.acceptedTurns.delete(session.sessionId);
+      throw error;
     }
-    void this.submitPrompt(session, promptText, behavior, images, echoUserMessage);
   }
 
   private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true): Promise<void> {
@@ -2512,8 +2523,14 @@ export class PiSessionService implements SessionRouteService {
     const promptOptions = buildPromptOptions(behavior, images);
     const promptPromise = this.runSessionEntryMutation(session, "send a prompt", () => session.prompt(text, promptOptions)).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
+      this.acceptedTurns.delete(session.sessionId);
       this.publishActivity(session, "error", "error", message);
       this.events.publish(session.sessionId, { type: "session.error", message });
+    }).finally(() => {
+      if (!session.isStreaming && !session.isCompacting && !session.isBashRunning && session.pendingMessageCount === 0) {
+        this.acceptedTurns.delete(session.sessionId);
+      }
+      this.publishStatus(session);
     });
     void promptPromise;
     return promptPromise;
@@ -2523,7 +2540,7 @@ export class PiSessionService implements SessionRouteService {
     const queue = this.compactionPromptQueues.get(session.sessionId) ?? [];
     queue.push({ kind, text, ...(images.length > 0 ? { images } : {}), ...(echoUserMessage ? {} : { echoUserMessage: false }) });
     this.compactionPromptQueues.set(session.sessionId, queue);
-    this.publishActivity(session, "message queued during compaction", "active");
+    this.publishActivity(session, session.isCompacting ? "message queued during compaction" : "message queued", "active");
     this.publishStatus(session);
   }
 
@@ -3071,6 +3088,7 @@ export class PiSessionService implements SessionRouteService {
     if (active === undefined) return;
     const sessionId = active.runtime.session.sessionId;
     this.clearCompactionPromptQueue(sessionId);
+    this.acceptedTurns.delete(sessionId);
     clearSessionQueue(active.runtime.session);
     // Settle run-scoped dialogs now, at abort-request time: pi's agent loop
     // waits for a parked `tool_call` dialog handler before it can emit
@@ -3286,6 +3304,7 @@ export class PiSessionService implements SessionRouteService {
     this.workspaceActivity?.removeSession(sessionId, active.runtime.session.sessionManager.getCwd());
     this.clearAuthLossWarningsForSession(sessionId);
     this.clearCompactionPromptQueue(sessionId);
+    this.acceptedTurns.delete(sessionId);
     // Disarm subsession notification before teardown so the abort below cannot
     // emit a "stopped working" event that notifies the parent (e.g. on archive).
     // The parent/children link is kept so the parent can still see the child.
@@ -3959,7 +3978,10 @@ export class PiSessionService implements SessionRouteService {
       // Extensions rename sessions via `pi.setSessionName`, which emits
       // `session_info_changed`; browsers only understand `session.name`.
       if (eventType === "session_info_changed") this.publishSessionName(session);
-      if (eventType === "agent_end") this.abortRunScopedExtensionDialogs(session.sessionId);
+      if (eventType === "agent_end") {
+        this.acceptedTurns.delete(session.sessionId);
+        this.abortRunScopedExtensionDialogs(session.sessionId);
+      }
       if (eventType === "compaction_end") this.scheduleCompactionQueueDrain(session.sessionId);
       if (eventType === "agent_start" || eventType === "agent_end") this.scheduleCompactionQueueDrain(session.sessionId);
       this.publishStatus(session);
@@ -4158,6 +4180,7 @@ export class PiSessionService implements SessionRouteService {
     return this.treeNavigations.has(session)
       || this.isSessionEntryMutationActive(session)
       || this.isTreeExclusiveOperationActive(session)
+      || this.acceptedTurns.has(session.sessionId)
       || sessionHasActiveWork(session, this.compactionQueuedMessages(session.sessionId).length);
   }
 
@@ -4244,6 +4267,14 @@ export class PiSessionService implements SessionRouteService {
     return (this.sessionEntryMutationCounts.get(session) ?? 0) > 0;
   }
 
+  private publishRunActivity(session: PiAgentSession, label: string, phase: "active" | "idle" | "error", detail?: string): void {
+    if (phase !== "active" && this.hasActiveWork(session)) {
+      this.publishActivity(session, "agent running", "active");
+      return;
+    }
+    this.publishActivity(session, label, phase, detail);
+  }
+
   private publishActivityForEvent(session: PiAgentSession, event: unknown): void {
     const eventType = getString(event, "type");
     if (eventType === undefined) return;
@@ -4256,18 +4287,18 @@ export class PiSessionService implements SessionRouteService {
       }, 250);
       return;
     }
-    if (eventType === "turn_end") { this.publishActivity(session, "turn complete", "idle"); return; }
+    if (eventType === "turn_end") { this.publishRunActivity(session, "turn complete", "idle"); return; }
     if (eventType === "message_start") { this.publishActivity(session, "message started", "active"); return; }
-    if (eventType === "message_end") { this.publishActivity(session, "message complete", "idle"); return; }
+    if (eventType === "message_end") { this.publishRunActivity(session, "message complete", "idle"); return; }
     if (eventType === "message_update") { this.publishActivity(session, "receiving response", "active"); return; }
     if (eventType === "tool_execution_start") { this.publishActivity(session, "running tool", "active", getString(event, "toolName")); return; }
     if (eventType === "tool_execution_end") {
       const isError = getBoolean(event, "isError") === true;
-      this.publishActivity(session, isError ? "tool failed" : "tool complete", isError ? "error" : "idle", getString(event, "toolName"));
+      this.publishRunActivity(session, isError ? "tool failed" : "tool complete", isError ? "error" : "idle", getString(event, "toolName"));
       return;
     }
     if (eventType === "bash_execution_start") { this.publishActivity(session, "running bash", "active"); return; }
-    if (eventType === "bash_execution_end") { this.publishActivity(session, "bash complete", "idle"); return; }
+    if (eventType === "bash_execution_end") { this.publishRunActivity(session, "bash complete", "idle"); return; }
     if (this.hasActiveWork(session)) this.publishActivity(session, eventType.replaceAll("_", " "), "active");
   }
 
@@ -4363,7 +4394,7 @@ export class PiSessionService implements SessionRouteService {
       persisted: sessionFileExists(session.sessionFile),
       ...(model === undefined ? {} : { model }),
       thinkingLevel: session.thinkingLevel,
-      isStreaming: session.isStreaming,
+      isStreaming: session.isStreaming || this.acceptedTurns.has(session.sessionId),
       isCompacting: session.isCompacting,
       isBashRunning: session.isBashRunning,
       pendingMessageCount: this.pendingMessageCount(session),

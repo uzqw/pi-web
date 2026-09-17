@@ -28,6 +28,27 @@ describe("PiWebApp workspace topology refresh wiring", () => {
     expect(refresh).toHaveBeenCalledWith("session-1", { silent: true });
   });
 
+  it("does not poll while selected-session activity is active", async () => {
+    const app = createApp();
+    selectSessionForPolling(app);
+    const state: unknown = Reflect.get(app, "state");
+    if (typeof state !== "object" || state === null) throw new Error("PiWebApp state was unavailable");
+    Reflect.set(app, "state", {
+      ...state,
+      activity: { sessionId: "session-1", phase: "active", label: "prompt accepted", at: "2026-05-15T00:00:00.000Z" },
+    });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const sessions: unknown = Reflect.get(app, "sessions");
+    if (!hasSelectedSessionRefresh(sessions)) throw new Error("PiWebApp SessionController was unavailable");
+    const refresh = vi.spyOn(sessions, "refreshSelectedSession").mockResolvedValue();
+    const tick: unknown = Reflect.get(app, "refreshSelectedTranscript");
+    if (typeof tick !== "function") throw new Error("Selected transcript refresh was unavailable");
+
+    await tick.call(app);
+
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["hidden document", { visibilityState: "hidden", isStreaming: false }],
     ["active session", { visibilityState: "visible", isStreaming: true }],

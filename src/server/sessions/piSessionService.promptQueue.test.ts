@@ -208,6 +208,41 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
+  it("queues a second prompt that arrives before the runtime reports streaming", async () => {
+    let releaseFirst!: () => void;
+    const firstHang = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const fake = fakeRuntime("overlap-session");
+    fake.session.prompt = (text: string, options?: { streamingBehavior?: "steer" | "followUp" }) => {
+      fake.calls.prompt.push({ text, options });
+      return fake.calls.prompt.length === 1 ? firstHang : Promise.resolve();
+    };
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("overlap-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("overlap-session"), "first");
+    await vi.waitFor(() => { expect(fake.calls.prompt).toHaveLength(1); });
+    await expect(service.status(sessionRef("overlap-session"))).resolves.toMatchObject({ isStreaming: true });
+
+    await service.prompt(sessionRef("overlap-session"), "second");
+    expect(fake.calls.prompt).toHaveLength(1);
+    await expect(service.status(sessionRef("overlap-session"))).resolves.toMatchObject({
+      queuedMessages: [{ kind: "followUp", text: "second" }],
+    });
+
+    fake.session.isStreaming = true;
+    fake.emit({ type: "agent_start" });
+    await vi.waitFor(() => { expect(fake.calls.prompt).toHaveLength(2); });
+    expect(fake.calls.prompt[1]).toEqual({ text: "second", options: { streamingBehavior: "followUp" } });
+
+    releaseFirst();
+    await service.dispose();
+  });
+
   it("holds prompts sent during compaction until compaction finishes", async () => {
     const hub = new CapturingSessionEventHub();
     const fake = fakeRuntime("compacting-session", { isCompacting: true });

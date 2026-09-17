@@ -1240,6 +1240,35 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     await service.dispose();
   });
 
+  it("keeps activity active when a tool ends while the agent is still running", async () => {
+    const hub = new CapturingSessionEventHub();
+    let listener: ((event: unknown) => void) | undefined;
+    const fake = fakeRuntime("busy-session", {
+      isStreaming: true,
+      subscribe: (next) => {
+        listener = next;
+        return () => undefined;
+      },
+    });
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("busy-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.status(sessionRef("busy-session"));
+    hub.globalEvents.length = 0;
+    listener?.({ type: "tool_execution_end", toolName: "read", isError: false });
+
+    expect(hub.globalEvents.filter((event) => event.type === "activity.update")).toMatchObject([
+      { activity: { sessionId: "busy-session", phase: "active", label: "agent running" } },
+    ]);
+
+    await service.dispose();
+  });
+
   it("uses injected archive and session-manager gateways for listing", async () => {
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,

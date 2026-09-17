@@ -104,6 +104,7 @@ interface SelectedSessionRefreshTarget {
   machineId: string;
   selectionSeq: number;
   errorOwner: SessionBrowserErrorOwner;
+  silent?: boolean;
 }
 
 export class SessionController {
@@ -1224,6 +1225,7 @@ export class SessionController {
       machineId,
       selectionSeq: this.selectionSeq,
       errorOwner: this.captureSessionErrorOwner(session),
+      ...(options?.silent === true ? { silent: true } : {}),
     };
     return this.requestSelectedSessionRefresh(target).catch((error: unknown) => {
       if (options?.silent === true) {
@@ -1246,6 +1248,7 @@ export class SessionController {
         this.notifications?.refreshSelectedSession(target.session, target.machineId) ?? Promise.resolve(),
       ]);
       if (!this.isCurrentRefreshTarget(target)) return;
+      if (target.silent === true && isSessionActive(this.getState().status, this.getState().activity) && !isSessionActive(status)) return;
       if (this.isUnchangedSelectedRefresh(target, key, page, status, streamSnapshot)) return;
       // Seed the in-flight partial assistant message on top of committed history
       // and record the snapshot's sequence as the watermark. Buffered/live events

@@ -11,7 +11,7 @@ import type {
   WorkspaceProvider,
   WorkspaceRemovePlan,
 } from "@jmfederico/pi-web/server-plugin-api";
-import { requestGitBackend } from "./git-backend.js";
+import { GIT_DIFF_OPERATION, GIT_STATUS_OPERATION, requestGitBackend } from "./git-backend.js";
 
 const GIT_LOCAL_ENV_VARS = Object.freeze([
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -45,6 +45,9 @@ export default plugin;
 export function createGitWorkspaceProvider(context: ServerPluginActivationContext): WorkspaceProvider {
   return Object.freeze({
     fallback: true,
+    // Status and diff only read the checkout, so a mounted Git panel polling
+    // them must not drop the host's cached workspace topology.
+    mutatesWorkspaces: (operation: string) => operation !== GIT_STATUS_OPERATION && operation !== GIT_DIFF_OPERATION,
     async probe(project: ProjectInput, signal: AbortSignal): Promise<ProviderClaim> {
       const result = await runGit(context, project.path, ["rev-parse", "--is-inside-work-tree"], signal);
       if (result.signal !== null) throw new Error(`git repository probe ended from signal ${result.signal}`);

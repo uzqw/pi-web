@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 describe("session daemon plugin backend routes", () => {
-  it("returns a JSON-only neutral provider result with attributable identity", async () => {
+  it("reports a workspace mutation for a provider operation that may change the topology", async () => {
     const registry = registryFor({
       probe: () => Promise.resolve("claim"),
       list: () => Promise.resolve([{
@@ -58,8 +58,52 @@ describe("session daemon plugin backend routes", () => {
       input: { cards: ["alpha"], includeClosed: false },
       board: { privateBoard: "roadmap" },
     });
-    // A provider operation is opaque here, so a completed request always
-    // reports that the project's workspace listing may have changed.
+    // This provider declares no read-only operations, so the host keeps the
+    // conservative default and reports that the listing may have changed.
+    expect(onWorkspacesMutated).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the cached workspace topology for an operation the provider declares a pure read", async () => {
+    const registry = registryFor({
+      probe: () => Promise.resolve("claim"),
+      list: () => Promise.resolve([{ key: "main", path: "/repo", label: "main", isMain: true }]),
+      request: () => Promise.resolve({ ok: true }),
+      mutatesWorkspaces: (operation) => operation !== "board.read",
+    });
+    const workspaceId = (await registry.resolve(project)).workspaces[0]?.id;
+    if (workspaceId === undefined) throw new Error("Expected workspace");
+    const onWorkspacesMutated = vi.fn();
+    registerPluginBackendRoutes(app, { projects: projectReader(), backends: registry, onWorkspacesMutated });
+    const base = `/plugin-backends/board/projects/${encodeURIComponent(project.id)}/workspaces/${workspaceId}`;
+
+    const read = await app.inject({ method: "POST", url: `${base}/board.read`, payload: { revision: "server-r1", input: null } });
+    const write = await app.inject({ method: "POST", url: `${base}/board.write`, payload: { revision: "server-r1", input: null } });
+
+    expect(read.statusCode).toBe(200);
+    expect(write.statusCode).toBe(200);
+    // Only the operation the provider did not declare as a read invalidates.
+    expect(onWorkspacesMutated).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps invalidating when the provider hook throws", async () => {
+    const registry = registryFor({
+      probe: () => Promise.resolve("claim"),
+      list: () => Promise.resolve([{ key: "main", path: "/repo", label: "main", isMain: true }]),
+      request: () => Promise.resolve({ ok: true }),
+      mutatesWorkspaces: () => { throw new Error("hook exploded"); },
+    });
+    const workspaceId = (await registry.resolve(project)).workspaces[0]?.id;
+    if (workspaceId === undefined) throw new Error("Expected workspace");
+    const onWorkspacesMutated = vi.fn();
+    registerPluginBackendRoutes(app, { projects: projectReader(), backends: registry, onWorkspacesMutated });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/plugin-backends/board/projects/${encodeURIComponent(project.id)}/workspaces/${workspaceId}/board.read`,
+      payload: { revision: "server-r1", input: null },
+    });
+
+    expect(response.statusCode).toBe(200);
     expect(onWorkspacesMutated).toHaveBeenCalledTimes(1);
   });
 
@@ -94,7 +138,11 @@ describe("session daemon plugin backend routes", () => {
 
   it("rejects a missing project and malformed request envelope before dispatch", async () => {
     const request = vi.fn<WorkspaceProviderRegistry["request"]>();
-    registerPluginBackendRoutes(app, { projects: projectReader(), backends: { request }, onWorkspacesMutated: vi.fn() });
+    registerPluginBackendRoutes(app, {
+      projects: projectReader(),
+      backends: { request, operationPreservesWorkspaceTopology: () => false },
+      onWorkspacesMutated: vi.fn(),
+    });
     const path = "/plugin-backends/board/projects/missing/workspaces/w1/cards.summary";
 
     const malformed = await app.inject({ method: "POST", url: path, payload: { input: null } });

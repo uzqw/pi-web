@@ -92,6 +92,15 @@ export interface WorkspaceProvider {
   list(project: ProjectInput, signal: AbortSignal): Promise<ProviderWorkspace[]>;
   request?(context: ProviderRequestContext): Promise<ProviderResponse>;
   prepareRemove?(context: ProviderRemoveContext): Promise<WorkspaceRemovePlan>;
+  /**
+   * Whether `request` may add or remove a workspace of the project. The host
+   * drops its cached workspace topology after any request that may have mutated
+   * it, so a provider whose operation is a pure read must report `false` for
+   * that operation. Omitting the hook keeps the conservative default: every
+   * request may mutate. The host bounds and catches the call, so a throw is
+   * treated as "may mutate".
+   */
+  mutatesWorkspaces?(operation: string): boolean;
 }
 
 export type ProviderClaim = "claim" | "pass";

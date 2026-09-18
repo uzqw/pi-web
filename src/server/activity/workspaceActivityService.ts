@@ -23,7 +23,11 @@ interface TerminalRecord {
  * terminal activity.
  *
  * It publishes nothing itself: attribution and roll-up belong to the machine
- * status projection, which this service notifies whenever the record changes.
+ * status projection. That projection is recomputed from scratch on every
+ * notification, so this service notifies only when a record's *contributed*
+ * activity changes. Session status and activity are republished per streamed
+ * token, and forwarding each of those would recompute the whole projection —
+ * including its workspace-topology resolution — hundreds of times per turn.
  */
 export class WorkspaceActivityService {
   private readonly sessions = new Map<string, SessionRecord>();
@@ -32,24 +36,24 @@ export class WorkspaceActivityService {
   constructor(private readonly onChanged?: () => void) {}
 
   applySessionStatus(cwd: string, status: SessionStatus): void {
-    const previousCwd = this.sessions.get(status.sessionId)?.cwd;
     const record = this.sessions.get(status.sessionId) ?? { cwd };
+    const previous = activeSessionCwd(record);
     record.cwd = cwd;
     record.status = status;
     if (!isSessionActive(status) && record.activity?.phase === "active") delete record.activity;
     this.sessions.set(status.sessionId, record);
     this.pruneIdleSession(status.sessionId);
-    this.notifyChangedCwds(previousCwd, cwd);
+    this.notifyContributionChange(previous, activeSessionCwd(this.sessions.get(status.sessionId)));
   }
 
   applySessionActivity(cwd: string, activity: SessionActivity): void {
-    const previousCwd = this.sessions.get(activity.sessionId)?.cwd;
     const record = this.sessions.get(activity.sessionId) ?? { cwd };
+    const previous = activeSessionCwd(record);
     record.cwd = cwd;
     record.activity = activity;
     this.sessions.set(activity.sessionId, record);
     this.pruneIdleSession(activity.sessionId);
-    this.notifyChangedCwds(previousCwd, cwd);
+    this.notifyContributionChange(previous, activeSessionCwd(this.sessions.get(activity.sessionId)));
   }
 
   removeSession(sessionId: string, cwd?: string): void {
@@ -106,6 +110,16 @@ export class WorkspaceActivityService {
     this.onChanged?.();
   }
 
+  /**
+   * Notify only when the cwd a session record contributes to the projection
+   * changed. One notification covers both cwds, because the projection
+   * recomputes every cwd from the record store.
+   */
+  private notifyContributionChange(previous: string | undefined, next: string | undefined): void {
+    if (previous === next) return;
+    this.notifyCwd(next ?? previous);
+  }
+
   private activeCwds(): string[] {
     const cwds = new Set<string>();
     for (const record of this.sessions.values()) {
@@ -122,4 +136,10 @@ export class WorkspaceActivityService {
       hasTerminalActivity: [...this.terminals.values()].some((terminal) => terminal.cwd === cwd),
     };
   }
+}
+
+/** The cwd a session record contributes to the projection, or undefined when idle. */
+function activeSessionCwd(record: SessionRecord | undefined): string | undefined {
+  if (record === undefined || !isSessionActive(record.status, record.activity)) return undefined;
+  return record.cwd;
 }

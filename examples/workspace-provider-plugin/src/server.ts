@@ -53,6 +53,8 @@ function createWorkspaceProvider(pluginId: string): WorkspaceProvider {
       }
       return Promise.resolve(`${pluginId} owns ${context.workspace.label} at ${context.workspace.path}`);
     },
+    // `summary` only reads, so the host keeps its cached workspace topology.
+    mutatesWorkspaces: (operation: string) => operation !== "summary",
   };
 }
 

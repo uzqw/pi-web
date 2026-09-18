@@ -500,6 +500,29 @@ describe("WorkspaceProviderRegistry", () => {
     expect(Object.hasOwn(requireRecord(observedContext?.workspace.data, "observed private data"), "__proto__")).toBe(true);
   });
 
+  it("reports a pure-read operation only for a provider that declares it, and stays conservative otherwise", () => {
+    const declaring = contribution("board", provider({
+      probe: () => Promise.resolve("claim"),
+      list: () => Promise.resolve([workspace("main", hostPath("/repo"), true)]),
+      request: () => Promise.resolve({ ok: true }),
+      mutatesWorkspaces: (operation) => operation !== "cards.summary",
+    }));
+    const throwing = contribution("throwing", provider({
+      request: () => Promise.resolve({ ok: true }),
+      mutatesWorkspaces: () => { throw new Error("hook exploded"); },
+    }));
+    const silent = contribution("silent", provider({ request: () => Promise.resolve({ ok: true }) }));
+    const registry = registryFor([declaring, throwing, silent]);
+
+    // A declared read keeps the caller's cached topology; anything else does not.
+    expect(registry.operationPreservesWorkspaceTopology("board", "cards.summary")).toBe(true);
+    expect(registry.operationPreservesWorkspaceTopology("board", "cards.move")).toBe(false);
+    // An undeclared operation, a throwing hook, and an unknown owner all invalidate.
+    expect(registry.operationPreservesWorkspaceTopology("silent", "cards.summary")).toBe(false);
+    expect(registry.operationPreservesWorkspaceTopology("throwing", "cards.summary")).toBe(false);
+    expect(registry.operationPreservesWorkspaceTopology("missing", "cards.summary")).toBe(false);
+  });
+
   it("rejects inactive and stale revisions before dispatch and rechecks owner and workspace identity", async () => {
     let listed = [workspace("main", hostPath("/repo"), true), workspace("secondary", hostPath("/linked"), false)];
     const ownerRequest = vi.fn(() => Promise.resolve({ ok: true }));

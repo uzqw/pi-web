@@ -329,6 +329,17 @@ describe("bundled Git workspace provider", () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
+  it("declares status and diff as topology-preserving reads", async () => {
+    const workspaceProvider = await providerFor(vi.fn(createServerPluginExecFile({ env: cleanGitEnvironment() })));
+
+    // A mounted Git panel polls these every few seconds. Reporting them as
+    // reads is what keeps the host from dropping its cached workspace topology
+    // (and re-probing every project) on each poll.
+    expect(workspaceProvider.mutatesWorkspaces?.(GIT_STATUS_OPERATION)).toBe(false);
+    expect(workspaceProvider.mutatesWorkspaces?.(GIT_DIFF_OPERATION)).toBe(false);
+    expect(workspaceProvider.mutatesWorkspaces?.("worktree.add")).toBe(true);
+  });
+
   it("surfaces claim-then-list command failure for host-owned degradation", async () => {
     const execFile = vi.fn((request: { args?: readonly string[] }): Promise<ServerPluginExecFileResult> => {
       const args = request.args ?? [];

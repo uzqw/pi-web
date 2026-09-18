@@ -653,6 +653,7 @@ interface WorkspaceProvider {
   list(project: ProjectInput, signal: AbortSignal): Promise<ProviderWorkspace[]>;
   request?(context: ProviderRequestContext): Promise<JsonValue>;
   prepareRemove?(context: ProviderRemoveContext): Promise<WorkspaceRemovePlan>;
+  mutatesWorkspaces?(operation: string): boolean;
 }
 
 interface ProviderWorkspace {
@@ -670,6 +671,7 @@ interface ProviderWorkspace {
 - `list()` runs only for the selected owner. Return stable provider-local keys, accessible absolute directory paths, unique paths/keys, non-empty labels, and exactly one main workspace.
 - `data` is round-tripped privately to that provider during the current resolution. `publicMetadata` appears under `workspace.provider.metadata` and is visible to **all browser code and API consumers**. Never put secrets in `publicMetadata` or removal wording.
 - `request()` is optional and receives a host-validated frozen current owner/workspace projection plus a bounded operation id, JSON input, and operation-scoped abort signal. It must return JSON.
+- `mutatesWorkspaces()` is optional and answers whether one `request()` operation can add or remove a workspace of the project. The host drops its cached workspace topology after any request that might have changed it, so declare a periodically polled read-only operation here as `false`; omitting the hook keeps the conservative default that every request may mutate, and a throw is treated as "may mutate".
 - `removal` is display text only and requires `prepareRemove()`. It advertises removal for that specific workspace; browser `workspace.provider.capabilities.remove` is true only when that workspace advertises it and the owning provider implements removal.
 - `prepareRemove()` returns a plan for a visible host-owned terminal run; returning the plan approves the operation but does **not** mean removal has completed. `command` is shell source interpreted by the host's login shell. The host chooses a safe current working directory outside the target, so the provider must use the supplied absolute `workspace.path`, shell-quote it, and keep removal in the foreground. The host records completion when the shell exits, with exit status 0 meaning success.
 - Provider failures and conflicts are diagnostics. A claimant that fails `list()` does not permit fallback takeover for the same resolution.

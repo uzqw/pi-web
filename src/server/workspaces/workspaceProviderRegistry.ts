@@ -199,6 +199,23 @@ export class WorkspaceProviderRegistry {
   }
 
   /**
+   * Whether the active owner of `pluginId` declares `operation` incapable of
+   * changing the project's workspace topology, so a caller may keep its cached
+   * topology. An unknown owner, an undeclared operation, and a throwing hook all
+   * stay conservative: the caller invalidates.
+   */
+  operationPreservesWorkspaceTopology(pluginId: string, operation: string): boolean {
+    const provider = this.contributions.find((contribution) => contribution.pluginId === pluginId)?.provider;
+    const mutatesWorkspaces = provider?.mutatesWorkspaces?.bind(provider);
+    if (mutatesWorkspaces === undefined) return false;
+    try {
+      return !mutatesWorkspaces(operation);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Resolve workspaces together with attributable diagnostics for host consumers.
    * Only identical work already in flight is shared; the entry is removed before
    * callers observe completion so ownership and topology are never cached.

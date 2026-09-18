@@ -27,15 +27,22 @@ export interface PluginBackendProjectReader {
 
 export interface PluginBackendDispatcher {
   request(request: WorkspaceProviderRequest): Promise<unknown>;
+  /**
+   * Whether this dispatcher's owner declares `operation` incapable of changing
+   * the project's workspace topology, so the caller may keep its cached one.
+   */
+  operationPreservesWorkspaceTopology(pluginId: string, operation: string): boolean;
 }
 
 export interface PluginBackendRouteDependencies {
   projects: PluginBackendProjectReader;
   backends: PluginBackendDispatcher;
   /**
-   * Reports that the project's workspaces may have changed. A provider
-   * operation is opaque here, so every completed request is reported rather
-   * than guessing which operations create or remove a workspace.
+   * Reports that the project's workspaces may have changed. A provider that
+   * declares an operation as a pure read
+   * ({@link WorkspaceProvider.mutatesWorkspaces}) skips this, so the periodic
+   * read-only polling a workspace panel does cannot keep dropping the cached
+   * topology that status projection depends on.
    */
   onWorkspacesMutated: () => void;
 }
@@ -96,7 +103,7 @@ export function registerPluginBackendRoutes(
       } catch (error) {
         return await pluginBackendRequestFailed(reply, error, pluginId, operation);
       } finally {
-        dependencies.onWorkspacesMutated();
+        if (!dependencies.backends.operationPreservesWorkspaceTopology(pluginId, operation)) dependencies.onWorkspacesMutated();
       }
     },
   );

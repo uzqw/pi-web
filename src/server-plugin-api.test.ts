@@ -113,7 +113,7 @@ describe("public server plugin API", () => {
       "apiVersion" | "pluginId" | "packageRoot" | "logger" | "settings" | "execFile" | "signal"
     >();
     expectTypeOf<keyof WorkspaceProvider>().toEqualTypeOf<
-      "fallback" | "probe" | "list" | "request" | "prepareRemove"
+      "fallback" | "probe" | "list" | "request" | "prepareRemove" | "mutatesWorkspaces"
     >();
     expectTypeOf<keyof ServerPluginExecFileRequest>().toEqualTypeOf<
       "file" | "args" | "cwd" | "env" | "unsetEnv" | "timeoutMs" | "signal"

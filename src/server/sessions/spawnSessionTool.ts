@@ -38,6 +38,9 @@ type SpawnSessionToolDetails = SpawnSessionResult;
 
 const SpawnSessionParams = Type.Object({
   thinkingLevel: Type.Optional(Type.Enum(KNOWN_THINKING_LEVELS, {
+    // typebox 1.x emits `enum` without `type`; strict providers (Moonshot/Kimi,
+    // Gemini) reject a property schema that has no `type`, so add it explicitly.
+    type: "string",
     description: "Thinking level override for the new session. Set this field only when instructed to use a specific thinking level or to choose an appropriate one. Otherwise omit it to inherit this session's thinking level. An unknown value is rejected; valid levels are clamped to the selected model's capabilities.",
   })),
   prompt: Type.String({

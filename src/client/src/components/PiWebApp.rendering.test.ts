@@ -698,6 +698,32 @@ describe("application rendering boundaries", () => {
     await settle(app);
     expect(app.shadowRoot?.querySelector("workspace-panel")?.shadowRoot?.textContent).toContain("No projects yet");
   });
+
+  it("forwards saved model presets to the composer and keeps the thinking control wired", async () => {
+    const preset = { provider: "ollama-cloud", id: "deepseek-v4.1-flash", thinkingLevel: "high" };
+    vi.spyOn(SessionController.prototype, "getSessionDefaults").mockResolvedValue(undefined);
+    const levels = vi.spyOn(SessionController.prototype, "listThinkingLevels").mockResolvedValue(["off", "high"]);
+    const app = await mountApp({ selectedWorkspace: workspace, selectedSession: session, mainView: "chat", status: sessionStatus(session.id), modelPresets: [preset] });
+    await settle(app);
+    const editor = promptEditor(app);
+
+    // A merge once dropped the separator before `.modelPresets`, which folded
+    // that binding into `.onSelectThinking`: saved presets stopped reaching the
+    // composer and the thinking gauge's click handler became a string.
+    const chips = [...editor.shadowRoot?.querySelectorAll<HTMLButtonElement>(".model-preset:not(.model-preset-add)") ?? []];
+    expect(chips.map((chip) => chip.textContent.trim())).toEqual(["1"]);
+
+    editor.shadowRoot?.querySelector<HTMLButtonElement>(".select-thinking")?.click();
+    await settle(app);
+    expect(levels).toHaveBeenCalledOnce();
+    const state: unknown = Reflect.get(app, "state");
+    if (typeof state !== "object" || state === null) throw new Error("Expected app state");
+    expect(Reflect.get(state, "thinkingDialog")).toMatchObject({ title: "Select Thinking Level" });
+    // Dismiss the modal before teardown: happy-dom throws from the detached shadow
+    // root's focus restore once the composer's editor is destroyed.
+    app.shadowRoot?.querySelector("command-picker")?.shadowRoot?.querySelector<HTMLButtonElement>("header button[aria-label='Close']")?.click();
+    await settle(app);
+  });
 });
 
 function sessionStatus(sessionId: string, warnings: SessionWarning[] = []): SessionStatus {

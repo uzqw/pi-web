@@ -19,6 +19,7 @@ import { loadAttachmentDelivery, saveAttachmentDelivery } from "../attachmentPre
 import { createMobilePromptEnterMedia, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
 import { composerSendShortcut, matchesComposerSend } from "../composerShortcuts";
 import type { ShortcutPreferenceConfig } from "../keyboardShortcuts";
+import { presetMatchesStatus, type ModelPreset } from "../modelPresets";
 import { promptEditorStyles, type CompletionItem } from "./shared";
 import { renderAttachIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
 import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
@@ -55,6 +56,11 @@ export class PromptEditor extends LitElement {
   @property({ attribute: false }) onStop?: () => void;
   @property({ attribute: false }) onSelectModel?: () => void;
   @property({ attribute: false }) onSelectThinking?: () => void;
+  /** Quick-switch presets rendered as numbered chips after the model button. */
+  @property({ attribute: false }) modelPresets: readonly ModelPreset[] = [];
+  @property({ attribute: false }) onPickModelPreset?: (preset: ModelPreset) => void;
+  @property({ attribute: false }) onAddModelPreset?: () => void;
+  @property({ attribute: false }) onRemoveModelPreset?: (preset: ModelPreset) => void;
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
   @query(".attachment-input") private attachmentInput?: HTMLInputElement;
@@ -193,6 +199,7 @@ export class PromptEditor extends LitElement {
       <div class="compact-status" aria-label="Session status">
         <button class="select-model" title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
         <button class="select-thinking icon-button" title=${`Thinking level: ${thinkingLevelLabel(status.thinkingLevel)}`} aria-label=${`Thinking level: ${thinkingLevelLabel(status.thinkingLevel)}`} @click=${() => this.onSelectThinking?.()}>${renderThinkingGauge(thinkingGauge(status.thinkingLevel, this.availableThinkingLevels))}</button>
+        ${this.renderModelPresets()}
       </div>
     `;
   }
@@ -209,6 +216,28 @@ export class PromptEditor extends LitElement {
         `)}
         ${this.chipError === undefined ? null : html`<div class="chip-error" role="alert">${this.chipError}</div>`}
       </div>
+    `;
+  }
+
+  private renderModelPresets() {
+    if (this.onPickModelPreset === undefined) return null;
+    const canAdd = this.onAddModelPreset !== undefined && !this.modelPresets.some((preset) => presetMatchesStatus(preset, this.status));
+    return html`
+      <span class="model-presets" role="group" aria-label="Model presets">
+        ${this.modelPresets.map((preset, index) => {
+          const current = presetMatchesStatus(preset, this.status);
+          const label = `${preset.provider}/${preset.id}${preset.thinkingLevel !== undefined ? ` · ${preset.thinkingLevel}` : ""}`;
+          return html`<button
+            class=${`model-preset${current ? " current" : ""}`}
+            title=${`${label} — click to apply, right-click to remove`}
+            aria-label=${`Model preset ${String(index + 1)}: ${label}`}
+            aria-pressed=${current ? "true" : "false"}
+            @click=${() => this.onPickModelPreset?.(preset)}
+            @contextmenu=${(event: MouseEvent) => { event.preventDefault(); this.onRemoveModelPreset?.(preset); }}
+          >${index + 1}</button>`;
+        })}
+        ${canAdd ? html`<button class="model-preset model-preset-add" title="Save current model and thinking level as a preset" aria-label="Add model preset" @click=${() => this.onAddModelPreset?.()}>+</button>` : null}
+      </span>
     `;
   }
 
@@ -320,10 +349,6 @@ export class PromptEditor extends LitElement {
           EditorView.lineWrapping,
           drawSelection(),
           EditorView.contentAttributes.of((view) => inputAssistanceContentAttributes(view.state.sliceDoc(0, view.state.selection.main.head))),
-          EditorView.domEventHandlers({
-            keyup: (event) => this.handleEditorKeyUp(event),
-            blur: () => this.resetEditorModifierState(),
-          }),
           placeholder("Message pi... Use / for commands, @ for tracked files, @ space for all files, # for models"),
           promptArgumentHintExtension,
           this.editableCompartment.of(EditorView.editable.of(!this.disabled)),
@@ -491,6 +516,7 @@ export class PromptEditor extends LitElement {
   private resetEditorModifierState(): boolean {
     this.explicitShiftKeyActive = false;
     return false;
+
   }
 
   private handleEditorTab(view: EditorView): boolean {

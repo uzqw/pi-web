@@ -3,14 +3,14 @@ import { COMPOSER_SEND_DESKTOP, COMPOSER_SEND_MOBILE, composerSendShortcut, matc
 import type { ShortcutKeyEvent } from "./keyboardShortcuts";
 
 describe("composer send bindings", () => {
-  it("defaults to Enter on desktop and Shift+Enter on mobile", () => {
-    expect(composerSendShortcut({}, { matches: false }, "auto")).toBe("enter");
+  it("defaults to Ctrl/Cmd+Enter on desktop and Shift+Enter on mobile", () => {
+    expect(composerSendShortcut({}, { matches: false }, "auto")).toBe("mod+enter");
     expect(composerSendShortcut({}, { matches: true }, "auto")).toBe("shift+enter");
   });
 
   it("preserves legacy preferences only for contexts without explicit configuration", () => {
     expect(composerSendShortcut({}, { matches: true }, "send")).toBe("enter");
-    expect(composerSendShortcut({}, { matches: false }, "newline")).toBe("shift+enter");
+    expect(composerSendShortcut({}, { matches: false }, "newline")).toBe("mod+enter");
     const shortcuts = { [COMPOSER_SEND_DESKTOP]: "mod+enter", [COMPOSER_SEND_MOBILE]: null };
     expect(composerSendShortcut(shortcuts, { matches: false }, "send")).toBe("mod+enter");
     expect(composerSendShortcut(shortcuts, { matches: true }, "send")).toBeNull();

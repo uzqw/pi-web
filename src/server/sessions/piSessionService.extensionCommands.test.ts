@@ -241,7 +241,7 @@ describe("PiSessionService extension command-context actions", () => {
     expect(h.fake.calls.reload).toBe(0);
   });
 
-  it("binds idle/reload operations and fails visibly for unsupported session replacements", async () => {
+  it("binds idle/reload operations and routes session replacements through the runtime", async () => {
     const h = await harness();
     const idle = deferred<undefined>();
     const waitForIdle = vi.fn(() => idle.promise);
@@ -252,8 +252,10 @@ describe("PiSessionService extension command-context actions", () => {
     await waiting;
     expect(await h.run((actions) => actions.reload())).toEqual({ value: undefined });
     expect(h.fake.calls.reload).toBe(1);
-    await expect(h.actions.newSession()).rejects.toThrow("ctx.newSession() is not supported in PI WEB");
-    await expect(h.actions.switchSession("/tmp/other.jsonl")).rejects.toThrow("ctx.switchSession() is not supported in PI WEB");
+    // PI WEB owns replacement: extensions reach the runtime host instead of the SDK's
+    // no-op defaults, so the active map, notifications, and browser follow-up stay ours.
+    await expect(h.actions.newSession()).resolves.toEqual({ cancelled: false });
+    await expect(h.actions.switchSession("/tmp/other.jsonl")).resolves.toEqual({ cancelled: false });
   });
 
   it("refuses retained command actions after their runtime is closed", async () => {

@@ -48,6 +48,21 @@ describe("session tree hierarchy model", () => {
     expect(visibleSessionTreeRows(model, new Set(["root"])).map((row) => row.node.id)).toEqual(["root"]);
   });
 
+  it("passes children of filtered-out nodes through to visible descendants", () => {
+    const model = buildSessionTreeModel({
+      nodes: [
+        { id: "u1", parentId: null, kind: "user", summary: "u1" },
+        { id: "tool", parentId: "u1", kind: "tool-result", summary: "tool" },
+        { id: "a1", parentId: "tool", kind: "assistant", summary: "a1" },
+      ],
+      activeLeafId: "a1",
+      activePathIds: ["u1", "tool", "a1"],
+    });
+    const conversationOnly = (node: { kind: string }) => node.kind === "user" || node.kind === "assistant";
+    expect(visibleSessionTreeRows(model, new Set(), conversationOnly).map((row) => row.node.id)).toEqual(["u1", "a1"]);
+    expect(initialSessionTreeSelection(model, conversationOnly)).toBe("a1");
+  });
+
   it("keeps linear history in one visual lane and indents only after forks", () => {
     const model = buildSessionTreeModel({
       nodes: [

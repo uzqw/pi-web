@@ -3,7 +3,7 @@ import type { AppState, ClosedExtensionDialog } from "../appState";
 import { NetworkRequestError } from "../api/http";
 import { BrowserErrorReporter, sessionBrowserErrorScope, workspaceBrowserErrorScope, type SessionBrowserErrorOwner } from "../browserErrors";
 import { forgetCachedNewSession, isCachedNewSessionInfo, markCachedNewSessionInfo, mergeCachedNewSessions, rememberCachedNewSession, stripCachedNewSessionMarker } from "../cachedNewSessions";
-import { textMessage } from "../chatMessages";
+import { lastUnacknowledgedUserMessageIndex, messageText, normalizeMessage, retractUnacknowledgedUserMessage, textMessage } from "../chatMessages";
 import { machineSessionKey } from "../machineKeys";
 import { samePromptChipTarget, type PromptChipTarget } from "../promptChips";
 import { isCreatingSessionId } from "../route";
@@ -124,6 +124,7 @@ interface SelectedSessionRefreshTarget {
   errorOwner: SessionBrowserErrorOwner;
   recoverNetwork?: boolean;
   navigation?: NavigationFreshness | undefined;
+  silent?: boolean;
 }
 
 export interface SessionSelectionOptions {
@@ -147,6 +148,9 @@ export class SessionController {
   private readonly browserErrors: BrowserErrorReporter;
   private selectionSeq = 0;
   private readonly pendingTreeActions = new Set<{ machineId: string; sessionId: string }>();
+  /** In-flight identical submissions (per session, kind, text, behavior, attachments). */
+  private readonly activeSendFingerprints = new Set<string>();
+
   private disposed = false;
   // Join-time stream watermark for the selected session. `seq` is the
   // `SessionEventHub` sequence captured together with the seeded partial by the
@@ -198,6 +202,7 @@ export class SessionController {
     else if (event.type === "activity.update") this.queueActivityUpdate(event.activity);
     else if (event.type === "session.created") this.applyCreatedSession(event.session);
     else if (event.type === "session.name") this.applySessionName(event.sessionId, event.name);
+    else if (event.type === "session.replaced") this.applyReplacedSession(event);
     else if (event.type === "models.changed") this.onModelScopeChanged?.(event.revision);
     else if (event.type === "session.startup") this.queueStartupProgress(event);
   }
@@ -440,7 +445,18 @@ export class SessionController {
     // session even if the user navigates elsewhere mid-upload.
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
-    return this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, folder, machineId, { markSending: hasAttachments || promptOnly }, errorOwner);
+    // A prompt sent while the session is busy is queued by the daemon, and the
+    // daemon only echoes immediately-submitted prompts. The queue panel is a
+    // queued message's authoritative display, so an optimistic transcript row
+    // would double-render it and then vanish on the next transcript refresh
+    // (which rebuilds from server history alone). A composer that submitted
+    // just before the status learned the session was busy still gets one; the
+    // queued status retracts it (see retractQueuedOptimisticPromptRows).
+    const optimistic = !hasAttachments && !this.promptWillBeQueued(streamingBehavior);
+    const delivered = await this.deliverWithDedup(session.id, "prompt", trimmed, streamingBehavior, attachments, async () =>
+      await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, folder, machineId, { markSending: true, optimistic }, errorOwner));
+    return delivered === true;
+
   }
 
   private markSendingPrompt(sessionId: string, sending: boolean): void {
@@ -449,6 +465,34 @@ export class SessionController {
       if (current[sessionId] !== true) this.setState({ sendingPrompts: { ...current, [sessionId]: true } });
     } else if (sessionId in current) {
       this.setState({ sendingPrompts: omitKey(current, sessionId) });
+    }
+  }
+
+  /**
+   * Whether the daemon will queue this prompt instead of submitting it now: a
+   * busy session (streaming or compacting) queues, and the composer only passes
+   * a streaming behavior for a session it already knows is busy.
+   */
+  private promptWillBeQueued(streamingBehavior: "steer" | "followUp" | undefined): boolean {
+    if (streamingBehavior !== undefined) return true;
+    const status = this.getState().status;
+    return status?.isStreaming === true || status?.isCompacting === true;
+  }
+
+  /**
+   * Deduplicate an in-flight submission: an identical prompt/shell/command
+   * for the same session arriving before the previous one has settled (a
+   * double key press or a retry of a message that is already on the wire) is
+   * dropped instead of being delivered twice.
+   */
+  private async deliverWithDedup<T>(sessionId: string, kind: "prompt" | "shell" | "command", text: string, behavior: string | undefined, attachments: PromptAttachment[] | undefined, deliver: () => Promise<T>): Promise<T | undefined> {
+    const fingerprint = `${sessionId}\u0000${kind}\u0000${text}\u0000${behavior ?? ""}\u0000${(attachments ?? []).map((attachment) => attachment.name).join(",")}`;
+    if (this.activeSendFingerprints.has(fingerprint)) return undefined;
+    this.activeSendFingerprints.add(fingerprint);
+    try {
+      return await deliver();
+    } finally {
+      this.activeSendFingerprints.delete(fingerprint);
     }
   }
 
@@ -461,7 +505,9 @@ export class SessionController {
     }
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
-    await this.deliverShellToSession(session, text, machineId, { optimisticLine: true }, errorOwner);
+    await this.deliverWithDedup(session.id, "shell", text.trim(), undefined, undefined, async () => {
+      await this.deliverShellToSession(session, text, machineId, { optimisticLine: true }, errorOwner);
+    });
   }
 
   async runCommand(text: string) {
@@ -473,7 +519,9 @@ export class SessionController {
     }
     const machineId = selectedMachineId(this.getState());
     const errorOwner = this.captureSessionErrorOwner(session);
-    await this.deliverCommandToSession(session, text, machineId, { applyResult: true }, errorOwner);
+    await this.deliverWithDedup(session.id, "command", text.trim(), undefined, undefined, async () => {
+      await this.deliverCommandToSession(session, text, machineId, { applyResult: true }, errorOwner);
+    });
   }
 
   private enqueuePendingSessionSend(session: ClientPendingStartSessionInfo, input: QueuedPendingSessionSendInput): void {
@@ -510,9 +558,10 @@ export class SessionController {
     return this.deliverCommandToSession(session, queued.text, machineId, { applyResult: true }, errorOwner);
   }
 
-  private async deliverPromptToSession(session: SessionInfo, text: string, streamingBehavior: "steer" | "followUp" | undefined, attachments: PromptAttachment[] | undefined, delivery: PromptAttachmentDelivery, folder: string | undefined, machineId: string, options: { markSending: boolean }, errorOwner: SessionBrowserErrorOwner): Promise<boolean> {
+  private async deliverPromptToSession(session: SessionInfo, text: string, streamingBehavior: "steer" | "followUp" | undefined, attachments: PromptAttachment[] | undefined, delivery: PromptAttachmentDelivery, folder: string | undefined, machineId: string, options: { markSending: boolean; optimistic?: boolean }, errorOwner: SessionBrowserErrorOwner): Promise<boolean> {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (options.markSending) this.markSendingPrompt(session.id, true);
+    if (options.optimistic === true) this.insertOptimisticPromptRow(session.id, text.trim());
     try {
       if (hasAttachments && delivery === "folder") {
         // The composer passes the workspace-effective folder it displayed, so
@@ -528,10 +577,48 @@ export class SessionController {
       this.markCachedNewSessionPersisted(session);
       return true;
     } catch (error) {
+      if (options.optimistic === true) await this.reconcileOptimisticPromptAfterFailure(session, text.trim(), machineId);
       this.reportSessionError(session, machineId, error, errorOwner);
       return false;
     } finally {
       if (options.markSending) this.markSendingPrompt(session.id, false);
+    }
+  }
+
+  /**
+   * Show the prompt in the transcript immediately so the composer's blank
+   * state cannot read as "nothing happened"; the server echo replaces the row.
+   */
+  private insertOptimisticPromptRow(sessionId: string, text: string): void {
+    if (this.getState().selectedSession?.id !== sessionId) return;
+    const messages = this.getState().messages;
+    // A prior attempt's row may still be pending (a retry raced the echo).
+    if (lastUnacknowledgedUserMessageIndex(messages, text) !== -1) return;
+    this.setState({ messages: [...messages, textMessage("user", text)] });
+  }
+
+  /**
+   * A prompt send failed. The failure is ambiguous over a flaky link: the
+   * prompt may have reached the daemon even though the response did not come
+   * back. Verify against the transcript tail: when the prompt actually landed,
+   * leave the optimistic row for the echo to replace; otherwise retract it so
+   * the transcript never shows a message that was not sent.
+   */
+  private async reconcileOptimisticPromptAfterFailure(session: SessionInfo, text: string, machineId: string): Promise<void> {
+    try {
+      const page = await this.api.messages(session, { limit: 6 }, machineId);
+      const delivered = page.messages.some((raw) => normalizeMessage(raw).some((line) => line.role === "user" && messageText(line) === text));
+      if (delivered) {
+        this.markCachedNewSessionPersisted(session);
+        return;
+      }
+    } catch {
+      // Verification itself failed: keep the row; the next authoritative
+      // transcript refresh decides.
+      return;
+    }
+    if (this.getState().selectedSession?.id === session.id) {
+      this.setState({ messages: retractUnacknowledgedUserMessage(this.getState().messages, text) });
     }
   }
 
@@ -1402,6 +1489,8 @@ export class SessionController {
       selectionSeq: this.selectionSeq,
       errorOwner: this.captureSessionErrorOwner(session),
       ...(options?.recoverNetwork === true ? { recoverNetwork: true } : {}),
+      ...(options?.silent === true ? { silent: true } : {}),
+
     };
     return this.requestSelectedSessionRefresh(target).catch((error: unknown) => {
       if (options?.recoverNetwork === true && !this.isCurrentRefreshTarget(target)) return;
@@ -1443,6 +1532,7 @@ export class SessionController {
     const notificationsRefresh = Promise.resolve().then(() => {
       if (!this.isCurrentRefreshTarget(target)) return;
       return this.notifications?.refreshSelectedSession(target.session, target.machineId);
+
     });
     notificationsRefresh.catch(() => undefined);
     const transcriptRefresh = this.selectedSessionRefreshes.request(key, async () => {
@@ -1473,6 +1563,10 @@ export class SessionController {
       if (!this.isCurrentRefreshTarget(target) || this.transcripts.historyRevision(key) !== historyRevision) return;
       this.browserErrors.clearRecovered(recoveryError);
       const { page, status } = snapshot;
+      // A best-effort background poll (the visible-idle timer) must never apply a
+      // snapshot that would deactivate a session this browser still sees as
+      // streaming/compacting; the next authoritative refresh reconciles it.
+      if (target.silent === true && isSessionActive(this.getState().status, this.getState().activity) && !isSessionActive(status)) return;
       this.preserveBufferedDialogOutcomes(buffer, snapshot.seq);
       if (!this.isUnchangedSelectedRefresh(target, key, page, status, snapshot)) {
         // History, partial, and watermark describe the same daemon boundary.
@@ -2033,8 +2127,10 @@ export class SessionController {
     const state = this.getState();
     const isSelected = state.selectedSession?.id === status.sessionId;
     const clearsStaleActivity = state.sessionActivities[status.sessionId]?.phase === "active" && !isSessionActive(status);
+    const messages = isSelected ? retractQueuedOptimisticPromptRows(state.messages, status.queuedMessages) : undefined;
     this.setState({
       sessionStatuses: { ...state.sessionStatuses, [status.sessionId]: status },
+      ...(messages === undefined ? {} : { messages }),
       ...sessionMessageCountPatch(state, status.sessionId, status.messageCount),
       ...(clearsStaleActivity ? { sessionActivities: omitSessionActivity(state.sessionActivities, status.sessionId) } : {}),
       status: isSelected ? status : state.status,
@@ -2112,6 +2208,22 @@ export class SessionController {
       sessions: this.getState().sessions.map(rename),
       selectedSession: selectedSession === undefined ? undefined : rename(selectedSession),
     });
+  }
+
+  /**
+   * Follow a daemon-side runtime replacement: an extension called `newSession`, `fork`, or
+   * `switchSession` behind the identity this browser is showing.
+   *
+   * Only the session actually being shown is followed; a replacement behind any other
+   * session belongs to whoever is looking at that one. The replaced transcript is dropped
+   * because its runtime is gone and any cached projection of it is now unverifiable.
+   */
+  private applyReplacedSession(event: Extract<GlobalSessionEvent, { type: "session.replaced" }>) {
+    const state = this.getState();
+    if (state.selectedSession?.id !== event.previousSessionId) return;
+    this.transcripts.discard(this.sessionCacheKey(event.previousSessionId));
+    this.setState({ sessions: [event.session, ...state.sessions.filter((candidate) => candidate.id !== event.session.id)] });
+    void this.selectSession(event.session);
   }
 
   private applyEvent(event: SessionUiEvent) {
@@ -2462,6 +2574,21 @@ function failedPendingSessionActivity(sessionId: string, message: string, queued
     detail: `${message}${queuedDetail}`,
     at: new Date().toISOString(),
   };
+}
+
+/**
+ * Drop optimistic rows for prompts the daemon reports as queued. A queued
+ * steer/follow-up is displayed by the queue panel and is never echoed into the
+ * transcript, so an unacknowledged row for the same text is a phantom: the
+ * composer inserted it before the status said "busy". The queued status is
+ * authoritative, so those rows go.
+ *
+ * Returns `undefined` when nothing was retracted, so callers can skip the patch.
+ */
+function retractQueuedOptimisticPromptRows(messages: AppState["messages"], queuedMessages: readonly QueuedSessionMessage[]): AppState["messages"] | undefined {
+  let next = messages;
+  for (const queued of queuedMessages) next = retractUnacknowledgedUserMessage(next, queued.text);
+  return next === messages ? undefined : next;
 }
 
 function queuedSessionMessagePreview(queued: QueuedPendingSessionSend): QueuedSessionMessage {

@@ -1,6 +1,7 @@
 import type { AuthProviderOption, CommandOption, CommandResult, ExtensionDialogAnswer, ExtensionDialogCloseReason, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PendingAskUser, PendingExtensionDialog, PiWebStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionModelCatalogEntry, SessionStatus, SessionTreeSnapshot, TerminalCommandRun, Workspace } from "./api";
 import type { ChatLine } from "./components/shared";
 import type { MachineStatusSnapshot } from "../../shared/machineStatus";
+import type { ModelPreset } from "./modelPresets";
 import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
 import type { BrowserErrorMap } from "./browserErrors";
@@ -57,6 +58,14 @@ export interface AppState {
   closedDialogs: ClosedExtensionDialog[];
   /** Thinking levels available for the selected session's current model. */
   availableThinkingLevels: readonly string[];
+  /** Quick-switch model+thinking presets rendered as numbered chips by the prompt editor (daemon-owned). */
+  modelPresets: ModelPreset[];
+  /** Daemon-owned pinned project ids, newest pin first. */
+  pinnedProjectIds: string[];
+  /** Daemon-owned pinned workspace ids, newest pin first. */
+  pinnedWorkspaceIds: string[];
+  /** Daemon-owned pinned session ids, newest pin first. */
+  pinnedSessionIds: string[];
   sessionStatuses: Record<string, SessionStatus>;
   sessionActivities: Record<string, SessionActivity>;
   /** Authoritative projection plus browser-local optimistic overlays for the selected inbox. */
@@ -151,6 +160,10 @@ export function initialAppState(): AppState {
     pendingDialogs: [],
     closedDialogs: [],
     availableThinkingLevels: [],
+    modelPresets: [],
+    pinnedProjectIds: [],
+    pinnedWorkspaceIds: [],
+    pinnedSessionIds: [],
     sessionStatuses: {},
     sessionActivities: {},
     selectedNotificationInbox: undefined,

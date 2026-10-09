@@ -119,7 +119,10 @@ describe("SessionController send queue", () => {
     expect(promptText).toBe("check this\n\n@project-attachments/shot.png");
   });
 
-  it("does not set the sending state for plain text messages", async () => {
+  // Plain prompts get the same in-flight guard as attachment sends: the
+  // composer must stay disabled (and Enter blocked) until the prompt settles,
+  // and the prompt shows optimistically in the transcript meanwhile.
+  it("sets the sending state for plain text messages and shows an optimistic row", async () => {
     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
     const seen: Record<string, true>[] = [];
     const api: typeof defaultApi = {
@@ -135,8 +138,9 @@ describe("SessionController send queue", () => {
     );
 
     await controller.send("hello");
-    expect(seen).toEqual([{}]);
+    expect(seen).toEqual([{ [oldSession.id]: true }]);
     expect(state.sendingPrompts).toEqual({});
+    expect(state.messages.map((message) => (message.role === "user" && message.parts[0]?.type === "text" ? message.parts[0].text : ""))).toEqual(["hello"]);
   });
 
   it("sends slash commands without inserting an optimistic transcript line and toggles the sending state", async () => {

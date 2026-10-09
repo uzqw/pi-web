@@ -377,6 +377,11 @@ export const chatStyles = css`
   .chat { --pi-chat-sticky-top: -26px; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; padding: 26px 16px 16px; box-sizing: border-box; }
   .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
   .activity-dock { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 6px; width: 240px; max-width: calc(100% - 32px); min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-bottom: 0; border-radius: 8px 8px 0 0; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 3px 10px; font-size: 11px; line-height: 16px; pointer-events: none; backdrop-filter: blur(6px); }
+  .jump-to-bottom { position: absolute; right: 20px; bottom: 68px; z-index: 21; display: inline-grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid var(--pi-border); border-radius: 50%; background: var(--pi-bg-overlay); color: var(--pi-muted); cursor: pointer; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }
+  .jump-to-bottom:hover, .jump-to-bottom:focus-visible { color: var(--pi-text-bright); border-color: var(--pi-accent); background: var(--pi-bg-overlay); }
+  .jump-to-bottom:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
+  .jump-to-bottom-icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+
   .activity-dock.active { border-color: var(--pi-success-border); color: var(--pi-success); background: var(--pi-success-bg-overlay); }
   .activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .45; flex: 0 0 auto; }
@@ -555,6 +560,12 @@ export const promptEditorStyles = css`
   .stop-button:not(:disabled) { color: var(--pi-danger); }
   .select-thinking .prompt-thinking-gauge .gauge-bar { fill: currentColor; stroke: none; opacity: .28; }
   .select-thinking .prompt-thinking-gauge .gauge-bar-active { opacity: 1; }
+  .model-presets { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+  .model-presets::-webkit-scrollbar { display: none; }
+  .model-preset { flex: 0 0 auto; min-width: 26px; padding: 4px 6px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); font-size: 11px; line-height: 1.2; text-align: center; }
+  .model-preset:hover { color: var(--pi-text); }
+  .model-preset.current { border-color: var(--pi-accent); color: var(--pi-text); background: var(--pi-selection-bg); }
+  .model-preset-add { color: var(--pi-muted); border-style: dashed; }
   .editor-attach { position: absolute; right: 8px; bottom: 8px; z-index: 2; width: 30px; height: 30px; }
   .editor-attach .prompt-action-icon { width: 16px; height: 16px; }
   textarea, .markdown-editor .cm-editor { box-sizing: border-box; width: 100%; min-height: 54px; max-height: 220px; resize: none; overflow: hidden; border-radius: 8px; border: 1px solid var(--pi-border); background: var(--pi-bg); color: var(--pi-text); font: var(--pi-control-font-size, 16px)/1.4 var(--pi-control-font-family, system-ui, sans-serif); }

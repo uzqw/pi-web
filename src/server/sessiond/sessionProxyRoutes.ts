@@ -70,6 +70,8 @@ export function registerSessionProxyRoutes(app: FastifyInstance, daemon: Session
   app.delete(`${prefix}/projects/:projectId`, (request, reply) => proxy(request, reply));
 
   app.all(`${prefix}/status`, (request, reply) => proxy(request, reply));
+  app.all(`${prefix}/preferences`, (request, reply) => proxy(request, reply));
+  app.all(`${prefix}/preferences/*`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/notices`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/notices/dismiss`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/auth`, (request, reply) => proxy(request, reply));

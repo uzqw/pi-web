@@ -1,4 +1,5 @@
 import type { GlobalSessionEvent, RealtimeEvent, SessionNotificationSummaryEvent, SessionUiEvent } from "../../shared/apiTypes.js";
+import type { PreferencesUpdatedEvent } from "../../shared/preferences.js";
 import { projectBrowserSessionEvent } from "../browserMessageProjection.js";
 import { SESSION_MEDIA_MODE } from "../../shared/sessionMedia.js";
 import { SessionMediaIndex, type SessionMediaScope } from "../sessions/sessionMediaIndex.js";
@@ -82,7 +83,7 @@ export class SessionEventHub {
     this.sendToSockets(this.globalSockets, payload);
   }
 
-  publishRealtime(event: RealtimeEvent): void {
+  publishRealtime(event: RealtimeEvent | PreferencesUpdatedEvent): void {
     const payload = JSON.stringify(event);
     this.sendToSockets(this.globalSockets, payload);
   }

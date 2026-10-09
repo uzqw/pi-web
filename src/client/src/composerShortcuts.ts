@@ -33,5 +33,8 @@ export function matchesComposerSend(event: ShortcutKeyEvent, shortcut: string | 
 }
 
 function defaultSendShortcut(media: PromptEnterMedia | undefined, preference: PromptEnterPreference): string {
+  // PI WEB fork: desktop submission is Ctrl/Cmd+Enter, never a bare Enter, so a
+  // stray Enter can never send. Touch/narrow contexts keep upstream's default.
+  if (media?.matches !== true) return "mod+enter";
   return shouldSendPromptOnEnter(media, preference) ? "enter" : "shift+enter";
 }

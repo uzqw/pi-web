@@ -39,7 +39,7 @@ type CommandAction = (ctx: ExtensionCommandContext) => Promise<unknown>;
 
 // Real resource loader, ExtensionRunner, persistent tree and AgentSessionRuntime.
 // Only configuration/model access and extension-owned workflow controls are isolated.
-async function fixture(options: { rootUser?: boolean; notificationsDisabled?: boolean } = {}) {
+async function fixture(options: { rootUser?: boolean; notificationsDisabled?: boolean; allowNameGeneration?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "pi-web-extension-commands-"));
   const agentDir = join(directory, "agent");
   const sessionDir = join(directory, "sessions");
@@ -70,7 +70,9 @@ async function fixture(options: { rootUser?: boolean; notificationsDisabled?: bo
 
   const modelRuntime = await createTestModelRuntime();
   const modelCall = vi.fn(() => { throw new Error("Extension commands must not call a model"); });
-  onTestFinished(() => { expect(modelCall).not.toHaveBeenCalled(); });
+  // Session replacement opens a fresh session, which legitimately generates a name
+  // through the model; only tests that never replace a session can assert no model call.
+  if (options.allowNameGeneration !== true) onTestFinished(() => { expect(modelCall).not.toHaveBeenCalled(); });
   const sessionEvents = new PiSessionEventConnections();
   // No realtime subscriber: discovery, dialogs and drafts must work by reads alone.
   const hub = new CapturingSessionEventHub();
@@ -796,8 +798,8 @@ describe("hosted ExtensionCommandContext actions with native Pi", () => {
     await expect(f.reloadDialogs[0]).resolves.toBe(true);
   });
 
-  it("waits for native tree work, reloads actual extensions, and explicitly rejects unsupported identity changes", async () => {
-    const f = await fixture();
+  it("waits for native tree work, reloads actual extensions, and routes identity changes through the runtime", async () => {
+    const f = await fixture({ allowNameGeneration: true });
     const held = gate();
     f.controls.tree = held;
     const navigation = f.service.navigateTree(f.ref(), { targetId: f.earlier, expectedLeafId: f.latest, summary: { mode: "none" } });
@@ -826,9 +828,10 @@ describe("hosted ExtensionCommandContext actions with native Pi", () => {
     ]);
     await expect(f.run((ctx) => ctx.navigateTree(f.latest))).resolves.toEqual({ result: { cancelled: false } });
     expect(f.manager.getLeafId()).toBe(f.latest);
-    await expect(f.run((ctx) => ctx.newSession())).resolves.toHaveProperty("error", expect.stringContaining("ctx.newSession() is not supported in PI WEB"));
-    await expect(f.run((ctx) => ctx.switchSession(f.originalFile))).resolves.toHaveProperty("error", expect.stringContaining("ctx.switchSession() is not supported in PI WEB"));
-    expect(f.session().sessionId).toBe(originalId);
+    // PI WEB owns replacement: newSession/switchSession route through the runtime host and
+    // rekey the active map instead of rejecting with the SDK's no-op defaults.
+    await expect(f.run((ctx) => ctx.newSession())).resolves.toEqual({ result: { cancelled: false } });
+    await expect(f.run((ctx) => ctx.switchSession(f.originalFile))).resolves.toEqual({ result: { cancelled: false } });
     expect(f.service.activeCount()).toBe(1);
   });
 });

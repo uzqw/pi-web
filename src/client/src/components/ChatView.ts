@@ -23,7 +23,9 @@ import {
   notificationTargetKey,
   notificationTrayHeading,
   notificationTrayIsCollapsed,
-  setNotificationTrayCollapsed,
+  readNotificationTrayExpandedKeys,
+  setNotificationTrayExpanded,
+  writeNotificationTrayExpandedKeys,
   type NotificationFocusTarget,
   type SelectedSessionNotificationView,
   type SessionNotificationTarget,
@@ -238,11 +240,12 @@ export class ChatView extends LitElement {
   @property({ attribute: false }) onLoadMore?: () => void;
   @query(".chat") private chat?: HTMLDivElement;
   @query("dialog.image-zoom") private imageZoomDialog?: HTMLDialogElement;
+  @query("button.jump-to-bottom") private jumpToBottomButton?: HTMLButtonElement;
   @state() private pinnedToBottom = true;
   @state() private zoomedImage: { src: string; alt: string } | undefined = undefined;
   @state() private expandedMetaKey: string | undefined;
   @state() private currentConversationIndex: number | undefined;
-  @state() private collapsedNotificationTargetKeys: ReadonlySet<string> = new Set();
+  @state() private expandedNotificationTargetKeys: ReadonlySet<string> = readNotificationTrayExpandedKeys();
   @state() private retainedEmptyNotificationTrayTargetKey: string | undefined;
   private pendingNotificationFocus: PendingNotificationFocus | undefined;
   private imageZoomModalRegistration: RenderedModalRegistration | undefined;
@@ -486,6 +489,7 @@ export class ChatView extends LitElement {
           ${this.renderOpenAsk()}
           ${this.renderExtensionDialogs()}
         </div>
+        ${this.renderJumpToBottom()}
         ${this.renderActivityDock()}
       </div>
       ${this.renderImageZoom()}
@@ -507,7 +511,7 @@ export class ChatView extends LitElement {
     const retainsFocusTarget = this.retainedEmptyNotificationTrayTargetKey === chatKey;
     const totalCount = notificationInboxTotalCount(inbox);
     if (totalCount === 0 && !hasPendingOverlay && !retainsFocusTarget) return null;
-    const collapsed = notificationTrayIsCollapsed(this.collapsedNotificationTargetKeys, inbox);
+    const collapsed = notificationTrayIsCollapsed(this.expandedNotificationTargetKeys, inbox);
     const toggleLabel = collapsed ? "Expand notifications" : "Collapse notifications";
     return html`
       <section class=${`notification-tray${collapsed ? " collapsed" : ""}`} role="region" aria-labelledby="session-notifications-heading" @focusout=${(event: FocusEvent) => { this.releaseEmptyNotificationTray(event); }}>
@@ -576,7 +580,10 @@ export class ChatView extends LitElement {
   }
 
   private toggleNotificationTray(inbox: SelectedSessionNotificationView, collapsed: boolean): void {
-    this.collapsedNotificationTargetKeys = setNotificationTrayCollapsed(this.collapsedNotificationTargetKeys, inbox, !collapsed);
+    // Toggling flips the current state: expand exactly when it was collapsed.
+    const keys = setNotificationTrayExpanded(this.expandedNotificationTargetKeys, inbox, collapsed);
+    this.expandedNotificationTargetKeys = keys;
+    writeNotificationTrayExpandedKeys(keys);
   }
 
   private dismissNotification(notificationId: string): void {
@@ -708,6 +715,29 @@ export class ChatView extends LitElement {
       || this.status?.isCompacting === true
       || this.status?.isBashRunning === true
       || this.activity?.phase === "active";
+  }
+
+  private onJumpToBottom() {
+    this.pinnedToBottom = true;
+    this.scrollToBottom();
+    this.jumpToBottomButton?.focus();
+  }
+
+  private renderJumpToBottom() {
+    if (this.pinnedToBottom) return null;
+    return html`
+      <button
+        type="button"
+        class="jump-to-bottom"
+        aria-label="Scroll to bottom"
+        @click=${() => { this.onJumpToBottom(); }}
+      >
+        <svg class="jump-to-bottom-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 5v14"></path>
+          <path d="m19 12-7 7-7-7"></path>
+        </svg>
+      </button>
+    `;
   }
 
   private renderActivityDock() {

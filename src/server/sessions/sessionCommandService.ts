@@ -3,6 +3,7 @@ import type { ExtensionCommandContextActions } from "@earendil-works/pi-coding-a
 import type { SessionUiEvent } from "../../shared/apiTypes.js";
 import type { ClientCommandResult, ClientSession, ClientSessionTreeSnapshot } from "../types.js";
 import { isBuiltinCommand } from "./builtinCommands.js";
+import { projectSessionInfo } from "./sessionInfoProjection.js";
 
 export interface CommandSession {
   sessionId: string;
@@ -305,19 +306,7 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
 }
 
 function clientSessionFromRuntime(runtime: CommandRuntime): ClientSession {
-  const session = runtime.session;
-  const parentSessionPath = typeof session.sessionManager.getHeader === "function" ? session.sessionManager.getHeader()?.parentSession : undefined;
-  return {
-    id: session.sessionId,
-    path: session.sessionFile ?? "",
-    cwd: runtime.cwd,
-    ...(session.sessionName === undefined ? {} : { name: session.sessionName }),
-    created: new Date().toISOString(),
-    modified: new Date().toISOString(),
-    messageCount: session.messages.length,
-    firstMessage: "",
-    ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
-  };
+  return projectSessionInfo(runtime.cwd, runtime.session);
 }
 
 function relatedSessionSourceTitle(session: CommandSession): string {

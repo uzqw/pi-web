@@ -30,6 +30,27 @@ describe("PiWebApp workspace topology refresh wiring", () => {
     expect(refresh).toHaveBeenCalledWith("session-1", { silent: true });
   });
 
+  it("does not poll while selected-session activity is active", async () => {
+    const app = createApp();
+    selectSessionForPolling(app);
+    const state: unknown = Reflect.get(app, "state");
+    if (typeof state !== "object" || state === null) throw new Error("PiWebApp state was unavailable");
+    Reflect.set(app, "state", {
+      ...state,
+      activity: { sessionId: "session-1", phase: "active", label: "prompt accepted", at: "2026-05-15T00:00:00.000Z" },
+    });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const sessions: unknown = Reflect.get(app, "sessions");
+    if (!hasSelectedSessionRefresh(sessions)) throw new Error("PiWebApp SessionController was unavailable");
+    const refresh = vi.spyOn(sessions, "refreshSelectedSession").mockResolvedValue();
+    const tick: unknown = Reflect.get(app, "refreshSelectedTranscript");
+    if (typeof tick !== "function") throw new Error("Selected transcript refresh was unavailable");
+
+    await tick.call(app);
+
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["hidden document", { visibilityState: "hidden", isStreaming: false }],
     ["active session", { visibilityState: "visible", isStreaming: true }],
@@ -44,6 +65,41 @@ describe("PiWebApp workspace topology refresh wiring", () => {
     if (typeof tick !== "function") throw new Error("Selected transcript refresh was unavailable");
 
     await tick.call(app);
+
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("re-lists the selected workspace when the session listing poll runs", async () => {
+    const app = createApp();
+    selectWorkspaceForPolling(app);
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const refresh = spyOnSessionListingRefresh(app);
+
+    await sessionListingTick(app);
+
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["hidden document", { visibilityState: "hidden", isStreaming: false }],
+    ["active selected session", { visibilityState: "visible", isStreaming: true }],
+  ])("does not re-list the workspace for a %s", async (_label: string, options: { visibilityState: string; isStreaming: boolean }) => {
+    const app = createApp();
+    selectWorkspaceForPolling(app, options.isStreaming);
+    vi.stubGlobal("document", { visibilityState: options.visibilityState });
+    const refresh = spyOnSessionListingRefresh(app);
+
+    await sessionListingTick(app);
+
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("does not re-list the workspace when none is selected", async () => {
+    const app = createApp();
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const refresh = spyOnSessionListingRefresh(app);
+
+    await sessionListingTick(app);
 
     expect(refresh).not.toHaveBeenCalled();
   });
@@ -89,11 +145,13 @@ describe("PiWebApp workspace topology refresh wiring", () => {
     stubBackgroundRefreshes(app);
     const refreshTopology = spyOnTopologyRefresh(app);
     const refreshSurface = replaceRefresh(app, "refreshCurrentWorkspaceSurface");
+    const refreshListing = spyOnSessionListingRefresh(app);
 
     await refreshAppData(app);
 
     expect(refreshTopology).toHaveBeenCalledOnce();
     expect(refreshSurface).toHaveBeenCalledOnce();
+    expect(refreshListing).toHaveBeenCalledOnce();
   });
 
   it("still re-lists workspaces when a sibling refresh in the same resume batch fails", async () => {
@@ -160,6 +218,32 @@ function selectSessionForPolling(app: PiWebApp, isStreaming = false): void {
   });
 }
 
+function selectWorkspaceForPolling(app: PiWebApp, isStreaming = false): void {
+  const state: unknown = Reflect.get(app, "state");
+  if (typeof state !== "object" || state === null) throw new Error("PiWebApp state was unavailable");
+  Reflect.set(app, "state", {
+    ...state,
+    selectedWorkspace: { id: "workspace-1", path: "/workspace" },
+    status: { isStreaming, isCompacting: false, isBashRunning: false, pendingMessageCount: 0 },
+  });
+}
+
+/** The exact tick the listing poll runs; calling it directly bypasses its timer. */
+async function sessionListingTick(app: PiWebApp): Promise<void> {
+  const tick: unknown = Reflect.get(app, "refreshSessionListing");
+  if (!isRefreshCallback(tick)) throw new Error("PiWebApp.refreshSessionListing is not callable");
+  await tick.call(app);
+}
+
+function spyOnSessionListingRefresh(app: PiWebApp) {
+  const refresh = vi.fn<RefreshCallback>(() => Promise.resolve());
+  const controller: unknown = Reflect.get(app, "sessions");
+  if (typeof controller !== "object" || controller === null || !Reflect.set(controller, "refreshCurrentWorkspaceSessions", refresh)) {
+    throw new Error("Could not replace the session listing refresh");
+  }
+  return refresh;
+}
+
 /**
  * Replaces the sibling refreshes that already have their own coverage so this test
  * observes only whether the resume/app-data paths include workspace topology.
@@ -176,8 +260,8 @@ function stubBackgroundRefreshes(app: PiWebApp): void {
     if (!Reflect.set(app, name, result)) throw new Error(`Could not replace PiWebApp.${name}`);
   }
   const sessions: unknown = Reflect.get(app, "sessions");
-  if (typeof sessions !== "object" || sessions === null || !Reflect.set(sessions, "refreshSelectedSession", result)) {
-    throw new Error("Could not replace the selected-session refresh");
+  if (typeof sessions !== "object" || sessions === null || !Reflect.set(sessions, "refreshSelectedSession", result) || !Reflect.set(sessions, "refreshCurrentWorkspaceSessions", result)) {
+    throw new Error("Could not replace the session refreshes");
   }
 }
 

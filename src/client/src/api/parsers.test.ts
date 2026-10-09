@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAskUserCloseResponse, parseAuthProvidersResponse, parseCommandResult, parseExtensionDialogCloseResponse, parseFileContentResponse, parseFileSuggestion, parseMachineRuntime, parseMessagePage, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebConfigResponse, parsePiWebPluginsResponse, parsePiWebRuntimeResponse, parsePiWebStatusResponse, parseRealtimeStreamEvent, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionInfo, parseSessionModelCatalogResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStartupProgressEvent, parseSessionStatus, parseSessionStreamEvent, parseSessionStreamSnapshot, parseSessionTreeForkResult, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseWorkspace, parseWorkspaceProviderResolution } from "./parsers";
+import { parseAskUserCloseResponse, parseAuthProvidersResponse, parseCommandResult, parseExtensionDialogCloseResponse, parseFileContentResponse, parseFileSuggestion, parseMachineRuntime, parseMessagePage, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebConfigResponse, parsePiWebPluginsResponse, parsePiWebRuntimeResponse, parsePiWebStatusResponse, parseRealtimeStreamEvent, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionInfo, parseSessionModelCatalogResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStartupProgressEvent, parseSessionStatus, parseSessionStreamEvent, parseSessionStreamSnapshot, parseSessionTreeForkResult, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseWorkspace, parseWorkspaceBranch, parseWorkspaceProviderResolution } from "./parsers";
 
 const legacyActivityWarning = {
   severity: "info", source: "PI-WEB",
   message: "Recently active in another PI-WEB instance. Avoid working on this session in both instances at once.",
 };
 
+
 describe("API parsers", () => {
+  it("parses a workspace branch response", () => {
+    expect(parseWorkspaceBranch({ branch: "main" })).toEqual({ branch: "main" });
+    expect(parseWorkspaceBranch({ branch: null })).toEqual({ branch: null });
+    expect(() => parseWorkspaceBranch({ branch: 3 })).toThrow();
+    expect(() => parseWorkspaceBranch(null)).toThrow();
+  });
+
   it("preserves interactive API-key flow hints and defaults providers without one", () => {
     const base = { id: "openai", name: "OpenAI", authType: "api_key", status: { configured: false } };
 
@@ -1023,6 +1031,27 @@ describe("API parsers", () => {
     expect(() => parseSessionTreeForkResult({ cancelled: true, session })).toThrow("session");
     expect(() => parseSessionTreeForkResult({ cancelled: true, promptDraft: "wrong branch" })).toThrow("promptDraft");
     expect(() => parseSessionTreeForkResult({ session })).toThrow("cancelled");
+  });
+
+  it("parses a runtime replacement announcement for the replaced identity", () => {
+    const session = {
+      id: "replacement-session",
+      path: "/sessions/replacement-session.jsonl",
+      cwd: "/repo",
+      created: "2026-01-01T00:00:00.000Z",
+      modified: "2026-01-01T00:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      parentSessionPath: "/sessions/replaced-session.jsonl",
+    };
+
+    expect(parseRealtimeStreamEvent({ type: "session.replaced", previousSessionId: "replaced-session", session })).toEqual({
+      type: "session.replaced",
+      previousSessionId: "replaced-session",
+      session,
+    });
+    expect(() => parseRealtimeStreamEvent({ type: "session.replaced", session })).toThrow("previousSessionId");
+    expect(() => parseRealtimeStreamEvent({ type: "session.replaced", previousSessionId: "replaced-session" })).toThrow("Expected object response");
   });
 
   it("strictly parses selected notification snapshots and realtime events", () => {

@@ -73,6 +73,8 @@ describe("managed launcher native Pi integration", () => {
       cwd: directory, session,
       setRebindSession: () => undefined,
       fork: () => Promise.resolve({ cancelled: true }),
+      newSession: () => Promise.resolve({ cancelled: true }),
+      switchSession: () => Promise.resolve({ cancelled: true }),
       dispose: () => { session.dispose(); return Promise.resolve(); },
     };
     const service = new PiSessionService(hub, {

@@ -126,6 +126,27 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
+  it("publishes session.name when an extension renames the session", async () => {
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime("rename-session");
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("rename-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.start("/workspace");
+    fake.session.sessionName = "Extension-renamed";
+    fake.emit({ type: "session_info_changed", name: "Extension-renamed" });
+
+    const named = hub.sessionEvents.filter(({ event }) => event.type === "session.name");
+    expect(named.at(-1)?.event).toEqual({ type: "session.name", sessionId: "rename-session", name: "Extension-renamed" });
+    expect(hub.globalEvents.some((event) => event.type === "session.name" && event.sessionId === "rename-session" && event.name === "Extension-renamed")).toBe(true);
+    await service.dispose();
+  });
+
   it("includes queued message details in session status", async () => {
     const fake = fakeRuntime("status-session", {
       messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "hi" }],
@@ -184,6 +205,41 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
 
     expect(fake.calls.prompt).toEqual([{ text: "Wait for the current turn", options: { streamingBehavior: "followUp" } }]);
     expect(hub.sessionEvents.some(({ event }) => event.type === "message.append")).toBe(false);
+    await service.dispose();
+  });
+
+  it("queues a second prompt that arrives before the runtime reports streaming", async () => {
+    let releaseFirst!: () => void;
+    const firstHang = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const fake = fakeRuntime("overlap-session");
+    fake.session.prompt = (text: string, options?: { streamingBehavior?: "steer" | "followUp" }) => {
+      fake.calls.prompt.push({ text, options });
+      return fake.calls.prompt.length === 1 ? firstHang : Promise.resolve();
+    };
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("overlap-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("overlap-session"), "first");
+    await vi.waitFor(() => { expect(fake.calls.prompt).toHaveLength(1); });
+    await expect(service.status(sessionRef("overlap-session"))).resolves.toMatchObject({ isStreaming: true });
+
+    await service.prompt(sessionRef("overlap-session"), "second");
+    expect(fake.calls.prompt).toHaveLength(1);
+    await expect(service.status(sessionRef("overlap-session"))).resolves.toMatchObject({
+      queuedMessages: [{ kind: "followUp", text: "second" }],
+    });
+
+    fake.session.isStreaming = true;
+    fake.emit({ type: "agent_start" });
+    await vi.waitFor(() => { expect(fake.calls.prompt).toHaveLength(2); });
+    expect(fake.calls.prompt[1]).toEqual({ text: "second", options: { streamingBehavior: "followUp" } });
+
+    releaseFirst();
     await service.dispose();
   });
 

@@ -2,7 +2,8 @@ import type { AppState } from "../appState";
 import { LOCAL_MACHINE_ID } from "../machineKeys";
 import { normalizeContributionQueryRecord, type ContributionQueryRecord } from "../namespacedQueryArgs";
 import { parseMainView, type AppRoute } from "../route";
-import { browserSessionStorage, PersistentValueMap, type KeyValueStorage } from "./sessionStorageMemory";
+import { browserLocalStorage, PersistentValueMap, type KeyValueStorage } from "./sessionStorageMemory";
+
 
 const LEGACY_FILES_QUERY_PARAMETER = "core.workspace.files--file";
 const LEGACY_TERMINAL_QUERY_PARAMETER = "core.workspace.terminal--terminal";
@@ -46,10 +47,10 @@ export class InMemoryMachineNavigationMemory implements MachineNavigationMemory 
 
 const machineNavigationStorageKey = "pi-web:machine-navigation:v1";
 
-export class SessionStorageMachineNavigationMemory implements MachineNavigationMemory {
+export class LocalStorageMachineNavigationMemory implements MachineNavigationMemory {
   private readonly snapshotsByMachine: PersistentValueMap<MachineNavigationSnapshot>;
 
-  constructor(storage: KeyValueStorage | undefined = browserSessionStorage()) {
+  constructor(storage: KeyValueStorage | undefined = browserLocalStorage()) {
     this.snapshotsByMachine = new PersistentValueMap(machineNavigationStorageKey, parseMachineNavigationSnapshot, storage);
   }
 

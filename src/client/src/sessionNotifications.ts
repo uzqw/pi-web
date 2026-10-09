@@ -8,6 +8,7 @@ import {
   type SessionNotificationSeverity,
   type SessionNotificationSummary,
 } from "../../shared/apiTypes";
+import { browserLocalStorage, type KeyValueStorage } from "./controllers/sessionStorageMemory";
 
 export type SessionNotificationProjectionStatus = "loading" | "fresh" | "stale";
 
@@ -234,16 +235,46 @@ export function notificationTargetKey(target: SessionNotificationTarget): string
   return JSON.stringify([target.machineId, target.cwd, target.sessionId]);
 }
 
-export function notificationTrayIsCollapsed(collapsedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget): boolean {
-  return collapsedTargetKeys.has(notificationTargetKey(target));
+export const NOTIFICATION_TRAY_EXPANDED_STORAGE_KEY = "pi-web:notification-tray-expanded:v1";
+
+/**
+ * Collapsed by default: a tray is only in view when its target was explicitly
+ * expanded, so the set tracks the expanded targets, not the collapsed ones.
+ */
+export function notificationTrayIsCollapsed(expandedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget): boolean {
+  return !expandedTargetKeys.has(notificationTargetKey(target));
 }
 
-export function setNotificationTrayCollapsed(collapsedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget, collapsed: boolean): ReadonlySet<string> {
-  const next = new Set(collapsedTargetKeys);
+export function setNotificationTrayExpanded(expandedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget, expanded: boolean): ReadonlySet<string> {
+  const next = new Set(expandedTargetKeys);
   const key = notificationTargetKey(target);
-  if (collapsed) next.add(key);
+  if (expanded) next.add(key);
   else next.delete(key);
   return next;
+}
+
+export function readNotificationTrayExpandedKeys(storage: KeyValueStorage | undefined = browserLocalStorage()): ReadonlySet<string> {
+  try {
+    const raw = storage?.getItem(NOTIFICATION_TRAY_EXPANDED_STORAGE_KEY);
+    if (raw === null || raw === undefined || raw === "") return new Set();
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return new Set();
+    return new Set(value.filter((key): key is string => typeof key === "string" && key !== ""));
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeNotificationTrayExpandedKeys(keys: ReadonlySet<string>, storage: KeyValueStorage | undefined = browserLocalStorage()): void {
+  try {
+    if (keys.size === 0) {
+      storage?.removeItem(NOTIFICATION_TRAY_EXPANDED_STORAGE_KEY);
+      return;
+    }
+    storage?.setItem(NOTIFICATION_TRAY_EXPANDED_STORAGE_KEY, JSON.stringify([...keys]));
+  } catch {
+    // Keep the in-memory copy even if localStorage is unavailable or full.
+  }
 }
 
 export function notificationInboxOverflowLabel(discardedCount: number): string {

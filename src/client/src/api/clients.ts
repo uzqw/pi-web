@@ -31,6 +31,7 @@ import {
   parsePiPackagesResponse,
   parsePiWebConfigResponse,
   parsePiWebPluginsResponse,
+  parsePreferencesSnapshot,
   parsePiWebRuntimeResponse,
   parsePiWebStatusResponse,
   parseProject,
@@ -54,6 +55,7 @@ import {
   parseStopped,
   parseThinkingLevelsResponse,
   parseWriteWorkspaceFileResponse,
+  parseWorkspaceBranch,
   parseWorkspaceProviderResolution,
   parseWorkspaceTrustResponse,
   requireMachineStatusSnapshot,
@@ -121,6 +123,19 @@ export const configApi = {
   saveConfig: (config: PiWebConfigValues, machineId?: string) => request(configPath(machineId), parsePiWebConfigResponse, { method: "PUT", body: JSON.stringify({ config }) }),
 };
 
+function preferencesPath(machineId?: string): string {
+  return machineId === undefined ? "api/preferences" : `${machinePrefix(machineId)}/preferences`;
+}
+
+export const preferencesApi = {
+  preferences: (machineId?: string) => request(preferencesPath(machineId), parsePreferencesSnapshot),
+  savePreference: (key: string, value: unknown, machineId?: string) => request(
+    `${preferencesPath(machineId)}/${encodeURIComponent(key)}`,
+    parsePreferencesSnapshot,
+    { method: "PUT", body: JSON.stringify({ value }) },
+  ),
+};
+
 export const pluginsApi = {
   plugins: (machineId?: string) => request(pluginsPath(machineId), parsePiWebPluginsResponse),
 };
@@ -179,8 +194,10 @@ function workspaceResolution(projectId: string, machineId = "local", options?: {
 
 export const workspacesApi = {
   workspaceResolution,
+  workspaceBranch: (projectId: string, workspaceId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/branch`, parseWorkspaceBranch),
   workspaces: async (projectId: string, machineId = "local", options?: { signal?: AbortSignal }) => [
     ...(await workspaceResolution(projectId, machineId, options)).workspaces,
+
   ],
   deleteWorkspace: (projectId: string, workspaceId: string, precondition: string, machineId = "local") => {
     const body: WorkspaceRemovalRequest = { precondition };
@@ -391,6 +408,7 @@ export const api = {
   ...machinesApi,
   ...noticesApi,
   ...configApi,
+  ...preferencesApi,
   ...pluginsApi,
   ...piPackagesApi,
   ...projectsApi,

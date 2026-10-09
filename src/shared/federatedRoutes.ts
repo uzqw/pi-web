@@ -113,6 +113,8 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/trust" },
   { method: "PUT", path: "/projects/:projectId/workspaces/:workspaceId/trust" },
   { method: "GET", path: "/status" },
+  { method: "GET", path: "/preferences" },
+  { method: "PUT", path: "/preferences/:key" },
   { method: "GET", path: "/notices" },
   { method: "POST", path: "/notices/dismiss" },
   { method: "GET", path: "/sessions" },

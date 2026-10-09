@@ -2,10 +2,12 @@ import { LitElement, html, type TemplateResult } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
 import { guard } from "lit/directives/guard.js";
 import { markdownWorkspaceContext, type WorkspaceFileOpenRequest } from "../formatting/workspaceLinks";
-import { configApi, projectsApi, effectiveWorkspaceAttachmentsFolder, effectiveWorkspaceUploadFolder, sessionsApi, workspacesApi, workspaceEffectiveAttachmentsFolder, workspaceEffectiveUploadFolder, type AskUserSubmission, type CommandOption, type ExtensionDialogAnswer, type Machine, type MachineHealth, type PiWebConfigValues, type PiWebShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelScopeMode, type SessionTreeForkResult, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type Workspace } from "../api";
+import { configApi, preferencesApi, projectsApi, effectiveWorkspaceAttachmentsFolder, effectiveWorkspaceUploadFolder, sessionsApi, workspacesApi, workspaceEffectiveAttachmentsFolder, workspaceEffectiveUploadFolder, type AskUserSubmission, type CommandOption, type ExtensionDialogAnswer, type Machine, type MachineHealth, type PiWebConfigValues, type PiWebShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelScopeMode, type SessionTreeForkResult, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type Workspace } from "../api";
+
 import type { AppAction } from "../actions";
 import { initialAppState, type AppState, type ModelDialogOrigin } from "../appState";
 import { browserErrorContext, browserErrorScopeKey, BrowserErrorReporter, clearBrowserError, machineBrowserErrorScope, visibleBrowserErrors, workspaceBrowserErrorScope, type BrowserError, type BrowserErrorScope } from "../browserErrors";
+import { hasStatusUnread } from "./activityBadge";
 import { isSessionActive } from "../../../shared/activity";
 import { workspaceDeleteOperation } from "../../../shared/workspaceDeletion";
 import { PI_WEB_CAPABILITIES, supportsPiWebCapability } from "../../../shared/capabilities";
@@ -18,13 +20,24 @@ import { PiWebStatusController } from "../controllers/piWebStatusController";
 import { SessionController } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
 import { WorkspaceController } from "../controllers/workspaceController";
-import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
-import { SessionStorageSessionSelectionMemory } from "../controllers/sessionSelection";
-import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
+import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, LocalStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
+import { LocalStorageSessionSelectionMemory } from "../controllers/sessionSelection";
+import { LocalStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
+
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId, type NavigationDestinationOptions, type NavigationFreshness, type NavigationScope, type NavigationSelection } from "../controllers/types";
 import { machineSessionKey } from "../machineKeys";
 import { appendPromptChipText, samePromptChipTarget, type StagedPromptChip } from "../promptChips";
+import { parseModelPresets, presetFromStatus, type ModelPreset } from "../modelPresets";
+import { parsePinnedIds } from "../pinnedList";
+import {
+  MODEL_PRESETS_PREFERENCE_KEY,
+  PINNED_PROJECTS_PREFERENCE_KEY,
+  PINNED_SESSIONS_PREFERENCE_KEY,
+  PINNED_WORKSPACES_PREFERENCE_KEY,
+  type PreferencesSnapshot,
+} from "../../../shared/preferences";
+
 import { HttpRequestError } from "../api/http";
 import { sessionCleanupRequestKey } from "../sessionCleanupUi";
 import { selectedNotificationView } from "../sessionNotifications";
@@ -62,7 +75,7 @@ import { canDeleteWorkspace, isWorkspaceDeletionPending, isWorkspaceDeletionRunP
 import "./MachineList";
 import "./ProjectList";
 import "./WorkspaceList";
-import { unreadSessionCount } from "./SessionList";
+import { sessionRowActivityKind, sessionRowUnread, unreadSessionCount } from "./SessionList";
 import "./SessionCleanupDialog";
 import "./SessionTreeNavigator";
 import "./ChatView";
@@ -84,7 +97,7 @@ import type { WorkspacePanelEmptyState, WorkspaceToolPanel } from "./WorkspacePa
 import "./appShell/AppContextBar";
 import "./appShell/AppMobileMainTabs";
 import type { AppMobileMainTab } from "./appShell/AppMobileMainTabs";
-import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocusTarget } from "./appShell/AppNavigationPanel";
+import { shouldShowMachinesSection, isNavigationActivityLit, type AppNavigationPanel, type NavigationActivityItem, type NavigationFocusTarget } from "./appShell/AppNavigationPanel";
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import { errorBanner } from "./errorBanner";
@@ -94,6 +107,7 @@ import { appStyles } from "./shared";
 
 const PI_WEB_STATUS_REFRESH_MS = 15 * 60 * 1000;
 const SELECTED_SESSION_REFRESH_MS = 5_000;
+const SESSION_LISTING_REFRESH_MS = 30_000;
 const PI_WEB_STATUS_DEFER_MS = 750;
 const REMOTE_ROUTE_RESTORE_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000] as const;
 const WORKSPACE_DELETION_RECONCILE_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
@@ -177,7 +191,7 @@ export class PiWebApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
     () => { this.updateUrl(); },
-    new SessionStorageSessionSelectionMemory(),
+    new LocalStorageSessionSelectionMemory(),
     {
       notifications: this.notifications,
       navigateToSession: (session, options) => this.navigateToSessionFromController(session, options),
@@ -211,12 +225,13 @@ export class PiWebApp extends LitElement {
     (patch) => { this.setState(patch); },
     () => { this.updateUrl(); },
     this.sessions,
-    new SessionStorageWorkspaceSelectionMemory(),
+    new LocalStorageWorkspaceSelectionMemory(),
     {
       navigateToWorkspace: (workspace, options) => this.navigateToWorkspaceFromController(workspace, options),
       captureNavigation: () => navigationSelectionFromState(this.state),
       beginNavigationOperation: (scope) => this.beginNavigationOperation(scope),
     },
+
   );
   private readonly projects = new ProjectController(
     () => this.state,
@@ -253,7 +268,8 @@ export class PiWebApp extends LitElement {
     },
   });
   private readonly machineRealtimeSockets = new Map<string, RealtimeSocket>();
-  private readonly machineNavigation = new SessionStorageMachineNavigationMemory();
+  private readonly machineNavigation = new LocalStorageMachineNavigationMemory();
+
   private readonly appShell = new AppShellController(this);
   private readonly browserResume = new BrowserResumeController({
     onResumeSignal: () => { this.handleBrowserResumeSignal(); },
@@ -270,6 +286,7 @@ export class PiWebApp extends LitElement {
   private readonly systemLightThemeMedia = typeof window !== "undefined" && "matchMedia" in window ? window.matchMedia("(prefers-color-scheme: light)") : undefined;
   private piWebStatusTimer: number | undefined;
   private selectedSessionRefreshTimer: number | undefined;
+  private sessionListingRefreshTimer: number | undefined;
   private piWebStatusDeferredTimer: number | undefined;
   private workspaceDeletionPollTimer: number | undefined;
   private workspaceDeletionRefreshAbort: AbortController | undefined;
@@ -513,7 +530,9 @@ export class PiWebApp extends LitElement {
     this.syncSessionUnreadMachines();
     this.piWebStatusTimer = window.setInterval(() => { this.schedulePiWebStatusRefresh(); }, PI_WEB_STATUS_REFRESH_MS);
     this.scheduleSelectedSessionRefresh();
+    this.scheduleSessionListingRefresh();
     void this.loadClientConfig();
+    void this.loadPreferences();
     void this.ensureGatewayPluginsLoaded();
     void this.loadProjectsAndRestoreRoute().finally(() => { this.schedulePiWebStatusRefresh(); });
   }
@@ -545,6 +564,8 @@ export class PiWebApp extends LitElement {
     this.piWebStatusTimer = undefined;
     if (this.selectedSessionRefreshTimer !== undefined) window.clearTimeout(this.selectedSessionRefreshTimer);
     this.selectedSessionRefreshTimer = undefined;
+    if (this.sessionListingRefreshTimer !== undefined) window.clearTimeout(this.sessionListingRefreshTimer);
+    this.sessionListingRefreshTimer = undefined;
     this.clearScheduledPiWebStatusRefresh();
     this.cancelWorkspaceDeletionRefresh();
     this.clearPendingRemoteRouteRestore();
@@ -618,6 +639,7 @@ export class PiWebApp extends LitElement {
       this.sessionUnread.refreshAll(),
       this.sessions.refreshSelectedSession(undefined, { recoverNetwork: true }),
       this.sessions.refreshCurrentWorkspaceSessions(selectedMachineId(this.state), { recoverNetwork: true }),
+
       this.refreshMachineStatusSnapshots(),
       this.refreshWorkspaceDeletionRuns(),
       this.refreshCurrentWorkspaceSurface(),
@@ -638,8 +660,30 @@ export class PiWebApp extends LitElement {
     const session = this.state.selectedSession;
     const status = this.state.status;
     if (session === undefined || session.archived === true || document.visibilityState !== "visible") return;
-    if (status?.isStreaming === true || status?.isCompacting === true || status?.isBashRunning === true || (status?.pendingMessageCount ?? 0) > 0) return;
+    if (isSessionActive(status, this.state.activity)) return;
     await this.sessions.refreshSelectedSession(session.id, { silent: true });
+  }
+
+  /**
+   * Re-lists the selected workspace so a session renamed or deleted by another Pi
+   * process reaches the sidebar without a manual reload. Mirrors the
+   * selected-session poll above: a hidden tab and a busy selected session are
+   * both skipped, because re-listing re-scans every session file that grew since
+   * the last scan.
+   */
+  private scheduleSessionListingRefresh(): void {
+    if (this.sessionListingRefreshTimer !== undefined) window.clearTimeout(this.sessionListingRefreshTimer);
+    this.sessionListingRefreshTimer = window.setTimeout(() => {
+      this.sessionListingRefreshTimer = undefined;
+      void this.refreshSessionListing().finally(() => { this.scheduleSessionListingRefresh(); });
+    }, SESSION_LISTING_REFRESH_MS);
+  }
+
+  private async refreshSessionListing(): Promise<void> {
+    const status = this.state.status;
+    if (this.state.selectedWorkspace === undefined || document.visibilityState !== "visible") return;
+    if (isSessionActive(status, this.state.activity)) return;
+    await this.sessions.refreshCurrentWorkspaceSessions();
   }
 
   private schedulePiWebStatusRefresh(delayMs = PI_WEB_STATUS_DEFER_MS): void {
@@ -701,6 +745,7 @@ export class PiWebApp extends LitElement {
     try {
       await Promise.all([
         this.sessions.refreshSelectedSession(),
+        this.sessions.refreshCurrentWorkspaceSessions(),
         this.refreshMachineStatusSnapshots(),
         this.loadClientConfig(),
         this.refreshWorkspaceDeletionRuns(),
@@ -1592,6 +1637,8 @@ export class PiWebApp extends LitElement {
         void this.sessions.refreshCurrentWorkspaceSessions(machineId, { recoverNetwork: true });
         void this.sessionUnread.refresh(machineId);
         void this.serverNotices.refresh(machineId);
+        void this.loadPreferences();
+
       },
       machineId,
     );
@@ -1638,7 +1685,9 @@ export class PiWebApp extends LitElement {
     if (event.type === "sessions.unread") this.sessionUnread.applyEvent(machineId, event);
     else if (event.type === "notices.updated") this.serverNotices.applyEvent(machineId, event);
     else if (event.type === "machine.status") this.machineStatus.apply(machineId, event.status);
+    else if (event.type === "preferences.updated") this.applyPreferenceEvent(event);
     else this.sessions.applyGlobalEvent(event);
+
   }
 
   private handleActivityTransition(previous: AppState, next: AppState) {
@@ -1660,6 +1709,7 @@ export class PiWebApp extends LitElement {
     this.connectRealtime();
     this.sessionCleanupDialog = undefined;
     this.setState({ piWebStatus: undefined });
+    void this.loadPreferences();
     void this.loadPluginsForSelectedMachine();
   }
 
@@ -1929,8 +1979,15 @@ export class PiWebApp extends LitElement {
         .selectedSession=${this.state.selectedSession}
         .startingSessionCount=${this.state.startingSessionCount}
         .canStartSession=${!!this.state.selectedWorkspace}
+        .pinnedProjectIds=${this.state.pinnedProjectIds}
+        .pinnedWorkspaceIds=${this.state.pinnedWorkspaceIds}
+        .pinnedSessionIds=${this.state.pinnedSessionIds}
+        .onChangePinnedProjects=${(ids: string[]) => { this.savePreference(PINNED_PROJECTS_PREFERENCE_KEY, ids); }}
+        .onChangePinnedWorkspaces=${(ids: string[]) => { this.savePreference(PINNED_WORKSPACES_PREFERENCE_KEY, ids); }}
+        .onChangePinnedSessions=${(ids: string[]) => { this.savePreference(PINNED_SESSIONS_PREFERENCE_KEY, ids); }}
         .collapsible=${true}
         .compact=${this.appShell.isMobileNavigationLayout}
+        .tabbed=${!this.appShell.isMobileNavigationLayout}
         .projectsCollapsed=${this.navigationSections.isCollapsed("projects")}
         .workspacesCollapsed=${this.navigationSections.isCollapsed("workspaces")}
         .sessionsCollapsed=${this.navigationSections.isCollapsed("sessions")}
@@ -1961,6 +2018,9 @@ export class PiWebApp extends LitElement {
         .onCleanupSessions=${this.navigationActions.cleanupSessions}
         .onFocusNavigationTarget=${this.navigationActions.focusNavigationTarget}
         .onCancelKeyboardNavigation=${this.navigationActions.cancelKeyboardNavigation}
+        .onSelectTab=${(section: NavigationSection) => { this.navigationSections.expand(section); }}
+        .onJumpToActivity=${(item: NavigationActivityItem) => { void this.jumpToActivity(item); }}
+
       ></app-navigation-panel>
     `;
   }
@@ -1989,6 +2049,75 @@ export class PiWebApp extends LitElement {
 
     this.navigationSections.advanceAfterSelection("sessions");
     await this.startSessionAndOpenChat(isCurrentSelection);
+  }
+
+  /**
+   * Jump from the desktop activity row to a lit project: opens the Sessions
+   * tab, selects the project, then opens the active/unread session its listing
+   * holds. Items always belong to the selected machine — the row is drawn from
+   * that machine's snapshot — so a machine switch between render and click
+   * drops the jump instead of crossing machines.
+   */
+  private async jumpToActivity(item: NavigationActivityItem): Promise<void> {
+    if (item.machineId !== selectedMachineId(this.state)) return;
+    const project = this.state.projects.find((candidate) => candidate.id === item.projectId);
+    if (project === undefined) return;
+    this.navigationSections.expand("sessions");
+    await this.selectNavigationItem("sessions", "chat", async () => {
+      await this.jumpToProject(item, project);
+    });
+  }
+
+  private async jumpToProject(item: NavigationActivityItem, project: Project): Promise<void> {
+    const litWorkspaceId = this.litWorkspaceIdForProject(item, this.state.workspacesByProjectId[project.id] ?? []);
+    await this.workspaces.selectProject(project, litWorkspaceId === undefined ? undefined : { workspaceId: litWorkspaceId });
+    await this.selectLitWorkspaceForProject(item, project);
+    await this.selectLitSession();
+  }
+
+  /**
+   * Cold-cache correction for project jumps. The per-project workspace listing
+   * (`workspacesByProjectId`) is only written once a project has been visited,
+   * so a project chip clicked against a cold cache made `selectProject` pick the
+   * remembered/first workspace. Now that the freshly loaded listing is in hand,
+   * if that picked workspace is not the lit one but another listed one is
+   * (unread first, then any activity), switch to it before the lit session
+   * selection. A no-op when the cache was already warm — `selectProject` landed
+   * on the lit workspace directly. Mirrors `selectLitSession`'s staleness guards:
+   * a superseded selection (workspace gone, project replaced, machine switched)
+   * drops the correction.
+   */
+  private async selectLitWorkspaceForProject(item: NavigationActivityItem, project: Project): Promise<void> {
+    const machineId = selectedMachineId(this.state);
+    const picked = this.state.selectedWorkspace;
+    if (picked === undefined || this.state.selectedProject?.id !== project.id) return;
+    if (selectedMachineId(this.state) !== machineId) return;
+    const litWorkspace = this.state.workspaces.find((workspace) => workspace.id === this.litWorkspaceIdForProject(item, this.state.workspaces));
+    if (litWorkspace === undefined || litWorkspace.id === picked.id) return;
+    await this.workspaces.selectWorkspace(litWorkspace);
+  }
+
+  /** The target project's lit workspace within a listing: unread first, then any activity. */
+  private litWorkspaceIdForProject(item: NavigationActivityItem, workspaces: Workspace[]): string | undefined {
+    const snapshot = this.state.machineStatusSnapshots[item.machineId];
+    const lit = workspaces.filter((workspace) => isNavigationActivityLit(snapshot?.workspaces[workspace.id]));
+    const unread = lit.find((workspace) => hasStatusUnread(snapshot?.workspaces[workspace.id]));
+    return (unread ?? lit[0])?.id;
+  }
+
+  /**
+   * After a jump has loaded the target workspace's sessions, prefer the unread
+   * one, then any in-flight one, over the remembered/latest first choice.
+   */
+  private async selectLitSession(): Promise<void> {
+    const machineId = selectedMachineId(this.state);
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) return;
+    const session = this.state.sessions.find((candidate) => sessionRowUnread(candidate, this.unreadSessionIds))
+      ?? this.state.sessions.find((candidate) => sessionRowActivityKind(candidate, this.state.sessionStatuses[candidate.id], this.state.sessionActivities[candidate.id], this.state.sendingPrompts[candidate.id] === true) !== undefined);
+    if (session === undefined || this.state.selectedSession?.id === session.id) return;
+    if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
+    await this.sessions.selectSession(session);
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
@@ -3203,6 +3332,60 @@ export class PiWebApp extends LitElement {
     await this.sessions.setModel(value.slice(0, slash), value.slice(slash + 1));
   }
 
+  private async applyModelPreset(preset: ModelPreset) {
+    await this.sessions.setModel(preset.provider, preset.id);
+    if (preset.thinkingLevel !== undefined) await this.sessions.setThinkingLevel(preset.thinkingLevel);
+  }
+
+  private addModelPreset() {
+    const preset = presetFromStatus(this.state.status);
+    if (preset === undefined) return;
+    this.setState({ modelPresets: [...this.state.modelPresets, preset] });
+    this.savePreference(MODEL_PRESETS_PREFERENCE_KEY, this.state.modelPresets);
+  }
+
+  private removeModelPreset(preset: ModelPreset) {
+    this.setState({ modelPresets: this.state.modelPresets.filter((candidate) => candidate !== preset) });
+    this.savePreference(MODEL_PRESETS_PREFERENCE_KEY, this.state.modelPresets);
+  }
+
+  /**
+   * Persist one preference on the selected machine's daemon. The daemon owns
+   * the value and broadcasts it back, so this is fire-and-forget: a failure
+   * leaves the local optimistic value until the next load or event corrects it.
+   */
+  private savePreference(key: string, value: unknown): void {
+    const machineId = selectedMachineId(this.state);
+    void preferencesApi.savePreference(key, value, machineId).catch((error: unknown) => {
+      console.warn(`Failed to save PI WEB preference ${key}`, error);
+    });
+  }
+
+  private applyPreferences(snapshot: PreferencesSnapshot): void {
+    this.setState({
+      pinnedProjectIds: parsePinnedIds(snapshot[PINNED_PROJECTS_PREFERENCE_KEY]),
+      pinnedWorkspaceIds: parsePinnedIds(snapshot[PINNED_WORKSPACES_PREFERENCE_KEY]),
+      pinnedSessionIds: parsePinnedIds(snapshot[PINNED_SESSIONS_PREFERENCE_KEY]),
+      modelPresets: parseModelPresets(snapshot[MODEL_PRESETS_PREFERENCE_KEY]),
+    });
+  }
+
+  /** Apply one live preference change without disturbing the other keys. */
+  private applyPreferenceEvent(event: { key: string; value: unknown }): void {
+    if (event.key === PINNED_PROJECTS_PREFERENCE_KEY) this.setState({ pinnedProjectIds: parsePinnedIds(event.value) });
+    else if (event.key === PINNED_WORKSPACES_PREFERENCE_KEY) this.setState({ pinnedWorkspaceIds: parsePinnedIds(event.value) });
+    else if (event.key === PINNED_SESSIONS_PREFERENCE_KEY) this.setState({ pinnedSessionIds: parsePinnedIds(event.value) });
+    else if (event.key === MODEL_PRESETS_PREFERENCE_KEY) this.setState({ modelPresets: parseModelPresets(event.value) });
+  }
+
+  private async loadPreferences(): Promise<void> {
+    try {
+      this.applyPreferences(await preferencesApi.preferences(selectedMachineId(this.state)));
+    } catch (error) {
+      console.warn("Failed to load PI WEB preferences", error);
+    }
+  }
+
   private openThemeDialog(): void {
     this.navigateSettings("general");
   }
@@ -3510,6 +3693,18 @@ export class PiWebApp extends LitElement {
   private readonly handleLoadEarlierMessages = () => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages());
   private notificationViewInput: AppState["selectedNotificationInbox"];
   private notificationView: ReturnType<typeof selectedNotificationView>;
+  private readonly handlePickModelPreset = (preset: ModelPreset): void => {
+    void this.applyModelPreset(preset);
+  };
+
+  private readonly handleAddModelPreset = (): void => {
+    this.addModelPreset();
+  };
+
+  private readonly handleRemoveModelPreset = (preset: ModelPreset): void => {
+    this.removeModelPreset(preset);
+  };
+
 
   private renderChatView(state: AppState, session: SessionInfo) {
     if (this.notificationViewInput !== state.selectedNotificationInbox) {
@@ -3709,9 +3904,10 @@ export class PiWebApp extends LitElement {
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
             <div class="composer-area">
-              <prompt-editor ?inert=${activityNoticeVisible} .promptChips=${this.selectedPromptChips()} .onRemoveChip=${this.handleRemovePromptChip} .shortcuts=${this.shortcutConfig} .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true || activityNoticeVisible} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking}></prompt-editor>
+              <prompt-editor ?inert=${activityNoticeVisible} .promptChips=${this.selectedPromptChips()} .onRemoveChip=${this.handleRemovePromptChip} .shortcuts=${this.shortcutConfig} .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true || activityNoticeVisible} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking}.modelPresets=${state.modelPresets} .onPickModelPreset=${this.handlePickModelPreset} .onAddModelPreset=${this.handleAddModelPreset} .onRemoveModelPreset=${this.handleRemoveModelPreset}></prompt-editor>
               ${this.renderSessionActivityNotice()}
             </div>
+
             ${this.renderStatusBar(state)}
             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
             ${state.modelDialog !== undefined ? html`<model-picker title=${state.modelDialog.title} .options=${state.modelDialog.options} .catalog=${state.modelDialog.catalog} .defaultValue=${state.modelDialog.defaultValue} .defaultsLoading=${state.modelDialog.defaultsLoading === true} .onSetDefault=${this.handleSetDefaultModel} .selectedValue=${state.modelDialog.selectedValue} .onPick=${(value: string) => { void this.pickModel(value); }} .onToggleEnabled=${this.handleToggleModelEnabled} .onSetScope=${this.handleSetModelScope} .onCancel=${() => { this.setState({ modelDialog: undefined }); }}></model-picker>` : null}

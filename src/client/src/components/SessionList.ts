@@ -6,6 +6,7 @@ import { isCachedNewSessionInfo } from "../cachedNewSessions";
 import { shortSessionId } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
 import { normalizeSessionPath } from "../sessionPaths";
+import { PinnedListController, pinnedListStyles, renderPinToggle } from "../pinnedList";
 import { isSessionActive } from "../../../shared/activity";
 import { actionMenuPanelStyle } from "./actionMenu";
 import { renderActionActivityIndicator, type ActivityIndicatorKind } from "./activityBadge";
@@ -66,8 +67,11 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onReload?: (session: SessionInfo) => void;
   @property({ attribute: false }) onCleanup?: () => void;
 
+  @property({ attribute: false }) pinnedIds: readonly string[] = [];
+  @property({ attribute: false }) onChangePinnedIds?: (ids: string[]) => void;
   @state() private openMenuSessionId: string | undefined;
   @state() private menuStyle = "";
+  private readonly pins = new PinnedListController(this, (ids) => { this.onChangePinnedIds?.(ids); });
   @state() private archivedExpanded = false;
   @state() private selectionScopes: ReadonlySet<SessionSelectionScope> = new Set();
   @state() private selectedSessionIds: ReadonlySet<string> = new Set();
@@ -116,6 +120,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (changed.has("pinnedIds")) this.pins.setIds(this.pinnedIds);
     if (changed.has("sessions")) {
       if (this.openMenuSessionId !== undefined && !this.sessions.some((session) => session.id === this.openMenuSessionId)) this.openMenuSessionId = undefined;
       if (!this.sessions.some((session) => session.archived === true)) this.archivedExpanded = false;
@@ -155,19 +160,26 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   override render() {
     const tree = this.sessionTree();
-    const { currentRows, currentSelectableSessions, archivedRows, archivedSessions } = tree;
+    const { currentRows: allCurrentRows, currentSelectableSessions, archivedRows, archivedSessions } = tree;
     // The collapsed heading still needs tree counts, but never descendant actions.
     if (!this.collapsed) tree.descendantCounts ??= unarchivedDescendantCounts(this.sessions);
     const descendantCounts = tree.descendantCounts;
+    const pinnedSessions = this.pins.partition(this.sessions.filter((session) => session.archived !== true), (session) => session.id).pinned;
+    const pinnedIds = new Set(pinnedSessions.map((session) => session.id));
+    const currentRows = allCurrentRows.filter((row) => !pinnedIds.has(row.session.id));
+    const pinnedRows: SessionRow[] = pinnedSessions.map((session) => ({ session, depth: 0, hasMissingParent: false }));
+
     const unreadCount = unreadSessionCount(currentSelectableSessions, this.unreadSessionIds);
     return html`
       <section>
-        ${this.renderHeading(currentRows.length + archivedRows.length, currentSelectableSessions, unreadCount)}
+        ${this.renderHeading(pinnedRows.length + currentRows.length + archivedRows.length, currentSelectableSessions, unreadCount)}
         ${this.collapsed ? null : html`
           <div class="list-body">
             ${this.renderCurrentSelectionToolbar(currentSelectableSessions)}
             ${this.startingCount > 0 ? this.renderStartingSession() : null}
+            ${pinnedRows.length > 0 ? repeat(pinnedRows, (row) => row.session.id, (row) => this.renderSession(row, descendantCounts?.get(row.session.id) ?? 0, "current", true)) : null}
             ${repeat(currentRows, (row) => row.session.id, (row) => this.renderSession(row, descendantCounts?.get(row.session.id) ?? 0, "current"))}
+
             ${archivedRows.length > 0 ? html`
               ${this.renderArchivedHeading(archivedSessions)}
               ${this.archivedExpanded ? html`
@@ -301,7 +313,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
       : html`<button @click=${() => { this.clearSelection(scope); }}>Clear selected (${selectedCount})</button>`;
   }
 
-  private renderSession(row: SessionRow, descendantCount: number, scope: SessionSelectionScope) {
+  private renderSession(row: SessionRow, descendantCount: number, scope: SessionSelectionScope, pinned = false) {
     const { session } = row;
     const cappedDepth = Math.min(row.depth, 2);
     const canBulkSelect = sessionSelectionScope(session) === scope;
@@ -316,12 +328,17 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const canDeleteTransient = isTransientNewSessionInfo(session, status);
     return html`
       <div
-        class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${selectionActive ? "selecting" : ""} ${unread ? "unread" : ""}"
+        class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${selectionActive ? "selecting" : ""} ${unread ? "unread" : ""} ${pinned ? "pinned" : ""} ${pinned && this.pins.dragOverId === session.id ? "drag-over" : ""} ${pinned && this.pins.dragId === session.id ? "dragging" : ""}"
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${session.path}
+        .draggable=${pinned}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.activateSessionRow(session, scope); }); }}
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session, scope); }}
+        @dragstart=${(event: DragEvent) => { this.pins.handleDragStart(event, session.id); }}
+        @dragover=${(event: DragEvent) => { this.pins.handleDragOver(event, session.id); }}
+        @drop=${(event: DragEvent) => { this.pins.handleDrop(event, session.id); }}
+        @dragend=${() => { this.pins.handleDragEnd(); }}
       >
         <div class="action-main ${selectionActive ? "selecting" : ""}">
           ${showsCheckbox ? html`<input class="session-checkbox" type="checkbox" aria-label=${`Select ${sessionLabel(session)}`} .checked=${bulkSelected} @click=${(event: MouseEvent) => { event.stopPropagation(); }} @change=${() => { this.toggleSelected(session.id); }}>` : null}
@@ -329,7 +346,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
           ${this.renderActivity(indicatorKind, unread)}
         </div>
         <div class="action-menu">
-          <button class="action-menu-toggle" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
+          ${session.archived === true ? null : renderPinToggle(this.pins, session.id, sessionLabel(session))}
+          <button class="action-menu-toggle ${session.archived === true ? "solo" : ""}" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
           ${this.openMenuSessionId === session.id ? html`
             <div class="action-menu-panel" style=${this.menuStyle}>
               ${session.archived === true
@@ -508,7 +526,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     return renderActionActivityIndicator(kind, label, unread ? "Unread session activity" : undefined);
   }
 
-  static override styles = [listStyles, css`
+  static override styles = [listStyles, pinnedListStyles, css`
     h2 { min-height: 30px; }
     h2 > .section-count { flex: 0 0 auto; display: inline; color: var(--pi-muted); font-size: inherit; }
     h2 > .section-unread-count { flex: 0 0 auto; display: inline; color: var(--pi-accent); font-size: inherit; text-transform: none; }
@@ -619,6 +637,22 @@ export function sessionRowUnread(session: SessionInfo, unreadSessionIds: Readonl
 }
 
 /**
+ * A listing is keyed by session id: the same session reaching the list twice
+ * (a listing producer and a browser-side transient row disagreeing) would
+ * render two rows for one session, and both would read as selected because
+ * selection matches by id. Keep the first occurrence, exactly as the
+ * session-tree model treats a duplicate projection.
+ */
+function sessionsWithUniqueIds(sessions: readonly SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>();
+  return sessions.filter((session) => {
+    if (seen.has(session.id)) return false;
+    seen.add(session.id);
+    return true;
+  });
+}
+
+/**
  * Index sessions by their normalized path. Parent links can arrive from a
  * different server producer than the listing itself (a `session.created`
  * broadcast carries the live runtime's file path), so keys are normalized to
@@ -648,10 +682,11 @@ export function sessionRowsForCurrentTree(sessions: SessionInfo[]): SessionRow[]
 }
 
 function sessionRows(sessions: SessionInfo[]): SessionRow[] {
-  const byPath = sessionsByNormalizedPath(sessions);
+  const uniqueSessions = sessionsWithUniqueIds(sessions);
+  const byPath = sessionsByNormalizedPath(uniqueSessions);
   const childrenByPath = new Map<string, SessionInfo[]>();
   const roots: SessionInfo[] = [];
-  for (const session of sessions) {
+  for (const session of uniqueSessions) {
     const parentPath = session.parentSessionPath;
     const parent = parentPath === undefined ? undefined : byPath.get(normalizeSessionPath(parentPath));
     if (parent === undefined) {

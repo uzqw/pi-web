@@ -1307,7 +1307,7 @@ describe("PluginRegistry", () => {
       ["core:prompt.focus", "mod+g c"],
       ["core:settings.open", "mod+,"],
       ["core:view.chat", "mod+1"],
-      ["core:session.start", "mod+enter"],
+
       ["core:session.stop", "mod+."],
     ]);
     expect(new Set(shortcuts.map(([, shortcut]) => shortcut)).size).toBe(shortcuts.length);

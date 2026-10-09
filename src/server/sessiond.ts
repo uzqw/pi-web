@@ -26,6 +26,7 @@ import { ProjectService } from "./projects/projectService.js";
 import { ProjectLifecycleService } from "./projects/projectLifecycleService.js";
 import { registerProjectMutationRoutes } from "./sessiond/projectMutationRoutes.js";
 import { ProjectStore, projectStorePath } from "./storage/projectStore.js";
+import { PreferencesStore, preferencesStorePath } from "./storage/preferencesStore.js";
 import {
   eligibleWorkspaceProviderContributions,
   WorkspaceProviderRegistry,
@@ -70,6 +71,8 @@ import { registerWorkspaceCatalogRoutes } from "./sessiond/workspaceCatalogRoute
 import { registerPluginBackendChannelRoutes } from "./sessiond/pluginBackendChannelRoutes.js";
 import { installPluginBackendChannelWebSocketPayloadLimit } from "./webSocketBridge.js";
 import { registerPairedPluginBackendRoutes } from "./sessiond/pluginBackendRoutes.js";
+import { registerPreferencesRoutes } from "./sessiond/preferencesRoutes.js";
+
 import { registerWorkspaceRemovalRoutes } from "./sessiond/workspaceRemovalRoutes.js";
 import { createWorkspaceProviderRuntimeSnapshot } from "./workspaces/workspaceCatalog.js";
 import { WorkspaceRemovalService } from "./workspaces/workspaceRemovalService.js";
@@ -243,12 +246,14 @@ async function createSessionDaemonRuntime() {
     catalogRefresher.start();
     auth.subscribe(() => { catalogRefresher.requestRefresh(); });
     const projects = new ProjectService(new ProjectStore(projectStorePath(daemonEnvironment)));
+    const preferences = new PreferencesStore(preferencesStorePath(daemonEnvironment));
     // Only dependency-ready providers can define the aggregate topology. The
     // runtime has already rejected any staged provider that depends on late
     // host authority as a cycle, so this snapshot cannot omit a future owner.
     const providerContributions = serverPlugins.providerContributions();
     const providerPluginIds = providerContributions.map(({ pluginId }) => pluginId);
     const providerHealth = await serverPlugins.inspectHealth(providerPluginIds);
+
     const workspaceProviders = new WorkspaceProviderRegistry({
       contributions: eligibleWorkspaceProviderContributions(providerContributions, providerHealth),
       logger: app.log,
@@ -395,7 +400,8 @@ async function createSessionDaemonRuntime() {
       await stateOwnership.release();
     };
     projectLifecycle.scheduleCleanup(); // One delayed pass for existing persisted unread, if any.
-    return { eventHub, machineStatus, statusAttribution, projectLifecycle, auth, sessions, serverNotices, unreadStore, activeAgentProfile, runtimeComponent, catalogRefresher, serverPlugins, projects, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals, shutdown };
+    return { eventHub, machineStatus, statusAttribution, projectLifecycle, auth, sessions, serverNotices, unreadStore, activeAgentProfile, runtimeComponent, catalogRefresher, serverPlugins, projects, preferences, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals, shutdown };
+
   } catch (error) {
     await projectLifecycleForFailedConstruction?.closeAll();
     try {
@@ -412,12 +418,15 @@ async function createSessionDaemonRuntime() {
   }
 }
 
-function registerSessionDaemonRoutes({ eventHub, machineStatus, statusAttribution, projectLifecycle, auth, sessions, serverNotices, runtimeComponent, projects, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals }: SessionDaemonRuntime): void {
+function registerSessionDaemonRoutes({ eventHub, machineStatus, statusAttribution, projectLifecycle, auth, sessions, serverNotices, runtimeComponent, projects, preferences, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals }: SessionDaemonRuntime): void {
   registerProjectMutationRoutes(app, projectLifecycle);
+
   registerMachineStatusRoutes(app, machineStatus);
   registerServerNoticeRoutes(app, serverNotices);
   registerAuthRoutes(app, auth);
   registerSessionRoutes(app, sessions, eventHub);
+  registerPreferencesRoutes(app, { store: preferences, events: eventHub });
+
   registerWorkspaceCatalogRoutes(app, {
     projects,
     workspaces: workspaceProviders,

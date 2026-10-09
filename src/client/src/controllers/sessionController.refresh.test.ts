@@ -233,6 +233,38 @@ describe("SessionController selected-session refresh", () => {
     expect(selectedStatus).not.toHaveBeenCalled();
     expect(streamSnapshot).not.toHaveBeenCalled();
   });
+
+  it("does not let a silent idle poll clobber live active status", async () => {
+    const statusFetch = deferred<SessionStatus>();
+    let state: AppState = {
+      ...initialAppState(),
+      selectedWorkspace: workspace,
+      selectedSession: oldSession,
+      sessions: [oldSession],
+      status: { ...status(oldSession.id), isStreaming: true },
+      activity: { sessionId: oldSession.id, phase: "active", label: "prompt accepted", at: "2026-05-15T00:00:00.000Z" },
+    };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => Promise.resolve(page("live", 1)),
+      status: () => statusFetch.promise,
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    const refreshing = controller.refreshSelectedSession(oldSession.id, { silent: true });
+    statusFetch.resolve(status(oldSession.id));
+    await refreshing;
+
+    expect(state.status?.isStreaming).toBe(true);
+    expect(state.activity?.phase).toBe("active");
+  });
 });
 
 describe("SessionController selected-session refresh errors", () => {

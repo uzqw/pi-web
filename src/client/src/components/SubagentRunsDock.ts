@@ -2,6 +2,7 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { SessionSubagentRun, SubagentProgressChild, SubagentRunState } from "../../../shared/apiTypes";
 import { subagentApi } from "../api/clients";
+import { LOCAL_MACHINE_ID } from "../machineKeys";
 import { subagentElapsedLabel } from "./SubagentProgressView";
 
 const LIVE_POLL_MS = 2_000;
@@ -40,6 +41,11 @@ function runSummary(runs: readonly SessionSubagentRun[]): string {
 export class SubagentRunsDock extends LitElement {
   @property({ attribute: false }) sessionId: string | undefined;
   /**
+   * Machine the session lives on. Run state sits in the temp directory of the host that
+   * ran the dispatch, so a remote session's runs are not readable from here.
+   */
+  @property({ attribute: false }) machineId: string = LOCAL_MACHINE_ID;
+  /**
    * Whether the loaded transcript holds an async subagent dispatch. Without one the
    * dock must not touch the network: most sessions never dispatch a subagent, and an
    * idle chat should stay silent.
@@ -50,20 +56,26 @@ export class SubagentRunsDock extends LitElement {
   /** Session whose runs are loaded; the poll belongs to exactly one session at a time. */
   private activeSessionId: string | undefined;
   private timer: number | undefined;
+  /** Set when the host says it cannot answer for this session, or the rows are final. */
+  private stopped = false;
+  /** Session with a request open, so a switch never overlaps the one already on the wire. */
+  private inFlightSessionId: string | undefined;
 
   override connectedCallback(): void {
     super.connectedCallback();
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     this.syncSession();
   }
 
   override disconnectedCallback(): void {
     this.stopTimer();
     this.activeSessionId = undefined;
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     super.disconnectedCallback();
   }
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>): void {
-    if (changed.has("sessionId") || changed.has("hasAsyncDispatches")) this.syncSession();
+    if (changed.has("sessionId") || changed.has("hasAsyncDispatches") || changed.has("machineId")) this.syncSession();
   }
 
   override render() {
@@ -146,7 +158,9 @@ export class SubagentRunsDock extends LitElement {
 
   private syncSession(): void {
     const sessionId = this.hasAsyncDispatches && this.sessionId !== undefined && this.sessionId !== "" ? this.sessionId : undefined;
-    if (!this.isConnected || sessionId === undefined) {
+    // A remote session's runs belong to that machine; this host cannot read them, and an
+    // empty dock would claim nothing is running.
+    if (!this.isConnected || sessionId === undefined || this.machineId !== LOCAL_MACHINE_ID) {
       this.stopTimer();
       this.activeSessionId = undefined;
       this.runs = [];
@@ -155,19 +169,37 @@ export class SubagentRunsDock extends LitElement {
     if (sessionId === this.activeSessionId) return;
     this.activeSessionId = sessionId;
     this.runs = [];
+    this.stopped = false;
     this.stopTimer();
     void this.refresh();
   }
 
+  private readonly onVisibilityChange = (): void => {
+    // A hidden tab arms no timer; coming back must not wait a full interval for the
+    // first answer.
+    if (document.visibilityState === "hidden" || this.stopped) return;
+    if (this.timer !== undefined) return;
+    void this.refresh();
+  };
+
   private async refresh(): Promise<void> {
     const sessionId = this.activeSessionId;
-    if (sessionId === undefined) return;
+    if (sessionId === undefined || this.inFlightSessionId === sessionId) return;
+    this.inFlightSessionId = sessionId;
     try {
-      const response = await subagentApi.sessionRuns(sessionId);
+      const response = await subagentApi.sessionRuns(this.machineId, sessionId);
       if (this.activeSessionId !== sessionId) return;
+      if (!response.supported) {
+        // Nothing to poll for a machine this host does not speak for.
+        this.runs = [];
+        this.stopped = true;
+        return;
+      }
       this.runs = response.runs;
     } catch {
       // A restarting host or a dropped request is transient: keep the last rows and retry.
+    } finally {
+      if (this.inFlightSessionId === sessionId) this.inFlightSessionId = undefined;
     }
     if (this.activeSessionId !== sessionId) return;
     const live = this.runs.some((run) => !isTerminal(run.state));
@@ -176,8 +208,13 @@ export class SubagentRunsDock extends LitElement {
 
   private schedule(delayMs: number): void {
     this.stopTimer();
-    if (!this.isConnected) return;
-    this.timer = window.setTimeout(() => { void this.refresh(); }, delayMs);
+    // A hidden tab polls nothing: the answer can only be seen after it comes back, and
+    // that path refreshes immediately.
+    if (!this.isConnected || this.stopped || document.visibilityState === "hidden") return;
+    this.timer = window.setTimeout(() => {
+      this.timer = undefined;
+      void this.refresh();
+    }, delayMs);
   }
 
   private stopTimer(): void {

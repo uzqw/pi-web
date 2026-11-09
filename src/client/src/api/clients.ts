@@ -375,15 +375,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export const subagentApi = {
   progress: (runId: string) => request(`api/subagent-runs/${encodeURIComponent(runId)}/progress`, parseSubagentRunProgress),
-  sessionRuns: (sessionId: string) =>
-    request(`api/subagent-runs?${new URLSearchParams({ sessionId }).toString()}`, parseSessionSubagentRuns),
+  // The machine travels with the session: run state sits in the temp directory of the
+  // host that ran the dispatch, and only that host can answer for it.
+  sessionRuns: (machineId: string, sessionId: string) =>
+    request(`api/subagent-runs?${new URLSearchParams({ sessionId, machineId }).toString()}`, parseSessionSubagentRuns),
 };
 
 function parseSessionSubagentRuns(value: unknown): SessionSubagentRunsResponse {
   const record = progressRecord(value, "session subagent runs");
+  const supported = record["supported"];
+  if (supported === false) return { supported: false, machineId: requiredProgressString(record, "machineId") };
+  if (supported !== true) throw new Error("Expected boolean field: supported");
   const runs = record["runs"];
   if (!Array.isArray(runs)) throw new Error("Expected array field: runs");
   return {
+    supported: true,
     runs: runs.map((run) => ({ ...parseSubagentRunProgress(run), mode: requiredProgressString(progressRecord(run, "session subagent run"), "mode") })),
   };
 }
@@ -395,12 +401,15 @@ function parseSubagentRunProgress(value: unknown): SubagentRunProgress {
   const startedAt = optionalProgressNumber(record, "startedAt");
   const updatedAt = optionalProgressNumber(record, "updatedAt");
   const totalMs = optionalProgressNumber(record, "totalMs");
+  const statusOversized = record["statusOversized"];
+  if (statusOversized !== undefined && typeof statusOversized !== "boolean") throw new Error("Expected optional boolean field: statusOversized");
   return {
     runId: requiredProgressString(record, "runId"),
     state: parseSubagentRunState(record["state"]),
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
     ...(totalMs === undefined ? {} : { totalMs }),
+    ...(statusOversized === undefined ? {} : { statusOversized }),
     children: children.map(parseSubagentProgressChild),
   };
 }

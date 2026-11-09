@@ -2,7 +2,7 @@ import { open, readdir, stat, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import type { FastifyInstance } from "fastify";
-import type { SubagentProgressChild, SubagentRunProgress, SubagentRunState } from "../shared/apiTypes.js";
+import type { SessionSubagentRunsResponse, SubagentProgressChild, SubagentRunProgress, SubagentRunState } from "../shared/apiTypes.js";
 
 const RUN_GROUP_PREFIX = "pi-subagents-";
 const RUNS_DIRECTORY = "async-subagent-runs";
@@ -10,6 +10,12 @@ const STATUS_FILE_MAX_BYTES = 2 * 1024 * 1024;
 const SESSION_TAIL_MAX_BYTES = 256 * 1024;
 const LAST_TEXT_MAX_LENGTH = 160;
 const TRUNCATION_RESERVE = 3;
+/** One lane read per session log; a wide workflow holds dozens, so they fan out bounded. */
+const LANE_READ_CONCURRENCY = 6;
+/** Steady-state polling repeats one question per run every couple of seconds; keep the answer per status write. */
+const SNAPSHOT_CACHE_MAX_ENTRIES = 64;
+/** Runs whose state lives on this host; another machine's runs are not readable from here. */
+const LOCAL_MACHINE_ID = "local";
 /** The composer dock lists the newest handful of a session's runs; older ones stay in the chat. */
 const MAX_SESSION_RUNS = 8;
 /**
@@ -44,9 +50,38 @@ export interface SessionSubagentRun extends SubagentRunProgress {
 interface BoundedRead {
   text: string;
   mtimeMs: number;
-  /** True when the window dropped the beginning of the file. */
-  truncatedHead: boolean;
+  /** The file was longer than the read budget, so `text` holds only its tail. */
+  oversized: boolean;
 }
+
+/**
+ * One `status.json` write, plus the lane detail read from its session logs on demand.
+ *
+ * The route is polled every couple of seconds per run, and a run's status file only
+ * changes when the runtime writes it, so the parsed status and the lane reads are kept
+ * per file write: an unchanged status file costs one `stat`, not a parse and a set of
+ * log reads.
+ */
+interface RunSnapshot {
+  mtimeMs: number;
+  sizeBytes: number;
+  status: Record<string, unknown> | undefined;
+  /** The status file exceeded the read budget, so its fields may be incomplete. */
+  oversized: boolean;
+  /** Filled by `loadLanes`; the dock filters runs by session before it needs lanes. */
+  lanes: LaneSnapshot[] | undefined;
+}
+
+/** What one lane says independent of the wall clock; only its elapsed time moves. */
+interface LaneSnapshot {
+  child: Omit<SubagentProgressChild, "elapsedMs">;
+  durationMs: number | undefined;
+  endedAt: number | undefined;
+  /** Last write to the lane's session log: the end stamp of a finished lane without one. */
+  sessionMtimeMs: number | undefined;
+}
+
+const snapshotCache = new Map<string, RunSnapshot>();
 
 interface SessionTailUsage {
   toolCount: number;
@@ -107,9 +142,8 @@ export async function readSubagentProgress(runId: string, options: SubagentProgr
   const runDir = await findRunDir(runId, options);
   if (runDir === undefined) return undefined;
 
-  const statusRead = await readBoundedFile(join(runDir, "status.json"), STATUS_FILE_MAX_BYTES, "head");
-  const status = statusRead === undefined ? undefined : parseJsonRecord(statusRead.text);
-  return progressFromStatus(runId, status, options);
+  const snapshot = await loadRunSnapshot(runDir);
+  return progressFromSnapshot(runId, snapshot, await loadLanes(snapshot), (options.now ?? Date.now)());
 }
 
 /**
@@ -123,40 +157,101 @@ export async function readSubagentProgress(runId: string, options: SubagentProgr
 export async function listSessionSubagentRuns(sessionId: string, options: SubagentProgressOptions = {}): Promise<SessionSubagentRun[]> {
   if (!RUN_ID_PATTERN.test(sessionId)) return [];
   const runsRoot = options.runsRoot ?? tmpdir();
-  const matches: { runId: string; status: Record<string, unknown> | undefined }[] = [];
+  // Which runs belong to the session is answered by the status file alone, so the
+  // session logs of runs the dock never shows are not read at all.
+  const matches: { runId: string; snapshot: RunSnapshot }[] = [];
   for (const runDir of await listRunDirs(runsRoot)) {
-    const statusRead = await readBoundedFile(join(runDir, "status.json"), STATUS_FILE_MAX_BYTES, "head");
-    const status = statusRead === undefined ? undefined : parseJsonRecord(statusRead.text);
-    const parentSession = optionalString(status, "sessionId");
+    const snapshot = await loadRunSnapshot(runDir);
+    const parentSession = optionalString(snapshot.status, "sessionId");
     if (parentSession?.includes(sessionId) !== true) continue;
-    const runId = optionalString(status, "runId") ?? basename(runDir);
-    matches.push({ runId, status });
+    matches.push({ runId: optionalString(snapshot.status, "runId") ?? basename(runDir), snapshot });
   }
-  matches.sort((left, right) => (optionalNumber(right.status, "startedAt") ?? 0) - (optionalNumber(left.status, "startedAt") ?? 0));
-  const bounded = matches.slice(0, MAX_SESSION_RUNS);
-  const runs = await Promise.all(
-    bounded.map(async ({ runId, status }) => ({
-      ...(await progressFromStatus(runId, status, options)),
-      mode: optionalString(status, "mode") ?? "single",
-    })),
-  );
+  matches.sort((left, right) => (optionalNumber(right.snapshot.status, "startedAt") ?? 0) - (optionalNumber(left.snapshot.status, "startedAt") ?? 0));
+  const now = (options.now ?? Date.now)();
+  const runs: SessionSubagentRun[] = [];
+  for (const { runId, snapshot } of matches.slice(0, MAX_SESSION_RUNS)) {
+    runs.push({ ...progressFromSnapshot(runId, snapshot, await loadLanes(snapshot), now), mode: optionalString(snapshot.status, "mode") ?? "single" });
+  }
   return runs;
 }
 
-async function progressFromStatus(
-  runId: string,
-  status: Record<string, unknown> | undefined,
-  options: SubagentProgressOptions,
-): Promise<SubagentRunProgress> {
-  const now = (options.now ?? Date.now)();
+/**
+ * The status view of one run, re-read only when the file was written again. Polling
+ * this route every couple of seconds is the steady state, and a run whose status file
+ * has not changed must not cost a parse and a set of session log reads each time.
+ */
+async function loadRunSnapshot(runDir: string): Promise<RunSnapshot> {
+  const path = join(runDir, "status.json");
+  let info;
+  try {
+    info = await stat(path);
+  } catch {
+    return emptySnapshot();
+  }
+  if (!info.isFile()) return emptySnapshot();
+  const cached = snapshotCache.get(path);
+  if (cached?.mtimeMs === info.mtimeMs && cached.sizeBytes === info.size) return cached;
+  const read = await readBoundedFile(path, STATUS_FILE_MAX_BYTES);
+  const snapshot: RunSnapshot = {
+    mtimeMs: info.mtimeMs,
+    sizeBytes: info.size,
+    status: read === undefined ? undefined : parseJsonRecord(read.text),
+    oversized: read?.oversized ?? false,
+    lanes: undefined,
+  };
+  rememberSnapshot(path, snapshot);
+  return snapshot;
+}
+
+function emptySnapshot(): RunSnapshot {
+  return { mtimeMs: 0, sizeBytes: 0, status: undefined, oversized: false, lanes: [] };
+}
+
+function rememberSnapshot(path: string, snapshot: RunSnapshot): void {
+  // Re-insert so the map's insertion order stays a least-recently-written order.
+  snapshotCache.delete(path);
+  snapshotCache.set(path, snapshot);
+  if (snapshotCache.size <= SNAPSHOT_CACHE_MAX_ENTRIES) return;
+  const oldest = snapshotCache.keys().next();
+  if (oldest.done === true) return;
+  snapshotCache.delete(oldest.value);
+}
+
+async function loadLanes(snapshot: RunSnapshot): Promise<readonly LaneSnapshot[]> {
+  if (snapshot.lanes !== undefined) return snapshot.lanes;
+  const runState = normalizeState(optionalString(snapshot.status, "state")) ?? "running";
+  const stepsValue: unknown = getProperty(snapshot.status, "steps");
+  const steps = Array.isArray(stepsValue) ? stepsValue : [];
+  const lanes = await mapWithLimit(steps, LANE_READ_CONCURRENCY, (step, index) => readLane(step, index, runState));
+  snapshot.lanes = lanes;
+  return lanes;
+}
+
+/** Runs `map` over `items` with at most `limit` reads in flight, keeping the input order. */
+async function mapWithLimit<T, R>(items: readonly T[], limit: number, map: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const queue = [...items.entries()];
+  const results: R[] = [];
+  const worker = async (): Promise<void> => {
+    for (let entry = queue.shift(); entry !== undefined; entry = queue.shift()) {
+      const [index, item] = entry;
+      results[index] = await map(item, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, worker));
+  return results;
+}
+
+function progressFromSnapshot(runId: string, snapshot: RunSnapshot, lanes: readonly LaneSnapshot[], now: number): SubagentRunProgress {
+  const status = snapshot.status;
   const state = normalizeState(optionalString(status, "state")) ?? "running";
   const startedAt = optionalNumber(status, "startedAt");
   const endedAt = optionalNumber(status, "endedAt");
   const lastUpdate = optionalNumber(status, "lastUpdate");
-  const stepsValue: unknown = getProperty(status, "steps");
-  const steps = Array.isArray(stepsValue) ? stepsValue : [];
-  const children = await Promise.all(steps.map((step, index) => readChild(step, index, state, now)));
   const totalMs = elapsedMs(startedAt, endedAt ?? (isTerminalState(state) ? undefined : now));
+  const children = lanes.map((lane) => {
+    const elapsed = laneElapsedMs(lane, now);
+    return elapsed === undefined ? { ...lane.child } : { ...lane.child, elapsedMs: elapsed };
+  });
 
   return {
     runId,
@@ -165,12 +260,13 @@ async function progressFromStatus(
     ...(lastUpdate === undefined ? {} : { updatedAt: lastUpdate }),
     ...(totalMs === undefined ? {} : { totalMs }),
     children,
+    ...(snapshot.oversized ? { statusOversized: true } : {}),
   };
 }
 
 /**
  * GET /api/subagent-runs/:runId/progress — 404 means this host has no run with that
- * id, which the chat card treats as "nothing to show".
+ * id, which the chat card treats as "the run directory is not written yet".
  */
 export function registerSubagentProgressRoutes(app: FastifyInstance, prefix = "/api", options: SubagentProgressOptions = {}): void {
   app.get<{ Params: { runId: string } }>(`${prefix}/subagent-runs/:runId/progress`, async (request, reply) => {
@@ -180,50 +276,53 @@ export function registerSubagentProgressRoutes(app: FastifyInstance, prefix = "/
   });
 
   // The composer dock asks for one session at a time; an unknown session is simply empty.
-  app.get<{ Querystring: { sessionId?: string } }>(`${prefix}/subagent-runs`, async (request, reply) => {
+  app.get<{ Querystring: { sessionId?: string; machineId?: string } }>(`${prefix}/subagent-runs`, async (request, reply) => {
+    const machineId = request.query.machineId ?? LOCAL_MACHINE_ID;
+    // Run state lives in the temp directory of the host that ran the dispatch, so only
+    // the local machine can answer. Saying so out loud beats an empty list, which the
+    // dock would show as "nothing is running" for a session it cannot see.
+    if (machineId !== LOCAL_MACHINE_ID) return { supported: false, machineId } satisfies SessionSubagentRunsResponse;
     const sessionId = request.query.sessionId;
     if (sessionId === undefined || !RUN_ID_PATTERN.test(sessionId)) return reply.code(400).send({ error: "sessionId must be a UUID" });
-    return { runs: await listSessionSubagentRuns(sessionId, options) };
+    const listing: SessionSubagentRunsResponse = { supported: true, runs: await listSessionSubagentRuns(sessionId, options) };
+    return listing;
   });
 }
 
-async function readChild(step: unknown, index: number, runState: SubagentRunState, now: number): Promise<SubagentProgressChild> {
+async function readLane(step: unknown, index: number, runState: SubagentRunState): Promise<LaneSnapshot> {
   const status = normalizeState(optionalString(step, "status")) ?? runState;
   const startedAt = optionalNumber(step, "startedAt");
   // The session log path is host-written runtime state, never client input: the
   // client supplies only the run id, which findRunDir validates.
   const sessionFile = optionalString(step, "sessionFile");
-  const sessionRead = sessionFile === undefined || sessionFile === "" ? undefined : await readBoundedFile(sessionFile, SESSION_TAIL_MAX_BYTES, "tail");
-  const usage = sessionRead === undefined ? undefined : scanSessionTail(sessionRead.text, sessionRead.truncatedHead);
-  const elapsed = childElapsedMs(step, status, startedAt, now, sessionRead?.mtimeMs);
-
-  return {
+  const sessionRead = sessionFile === undefined || sessionFile === "" ? undefined : await readBoundedFile(sessionFile, SESSION_TAIL_MAX_BYTES);
+  const usage = sessionRead === undefined ? undefined : scanSessionTail(sessionRead.text, sessionRead.oversized);
+  const child: Omit<SubagentProgressChild, "elapsedMs"> = {
     key: optionalString(step, "workflowKey") ?? optionalString(step, "runId") ?? `step-${String(index)}`,
     label: stepLabel(step, index),
     agent: optionalString(step, "agent") ?? "",
     status,
     ...(startedAt === undefined ? {} : { startedAt }),
-    ...(elapsed === undefined ? {} : { elapsedMs: elapsed }),
     toolCount: usage?.toolCount ?? 0,
     ...(usage?.lastTool === undefined ? {} : { lastTool: usage.lastTool }),
     ...(usage?.lastText === undefined ? {} : { lastText: usage.lastText }),
     ...(usage?.isError === undefined ? {} : { isError: usage.isError }),
   };
+  return {
+    child,
+    durationMs: optionalNumber(step, "durationMs"),
+    endedAt: optionalNumber(step, "endedAt"),
+    sessionMtimeMs: sessionRead?.mtimeMs,
+  };
 }
 
-function childElapsedMs(
-  step: unknown,
-  status: SubagentRunState,
-  startedAt: number | undefined,
-  now: number,
-  sessionMtimeMs: number | undefined,
-): number | undefined {
-  const durationMs = optionalNumber(step, "durationMs");
-  if (durationMs !== undefined) return durationMs;
+function laneElapsedMs(lane: LaneSnapshot, now: number): number | undefined {
+  if (lane.durationMs !== undefined) return lane.durationMs;
+  const startedAt = lane.child.startedAt;
   if (startedAt === undefined) return undefined;
   // A running lane has no end stamp yet; a finished lane whose status never
   // recorded one still has the last write to its session log.
-  return elapsedMs(startedAt, isTerminalState(status) ? optionalNumber(step, "endedAt") ?? sessionMtimeMs : now);
+  return elapsedMs(startedAt, isTerminalState(lane.child.status) ? lane.endedAt ?? lane.sessionMtimeMs : now);
 }
 
 function elapsedMs(startedAt: number | undefined, end: number | undefined): number | undefined {
@@ -370,16 +469,16 @@ async function isFile(path: string): Promise<boolean> {
   }
 }
 
-async function readBoundedFile(path: string, maxBytes: number, mode: "head" | "tail"): Promise<BoundedRead | undefined> {
+async function readBoundedFile(path: string, maxBytes: number): Promise<BoundedRead | undefined> {
   let handle: FileHandle | undefined;
   try {
     handle = await open(path, "r");
     const info = await handle.stat();
     if (!info.isFile()) return undefined;
-    // A status file is one small object; a tail window is how session logs are read.
-    if (mode === "head" && info.size > maxBytes) return undefined;
+    // Only the newest bytes matter: a session log grows without bound, and a status
+    // file over the budget still describes its run from the tail rather than vanishing.
     const length = Math.min(info.size, maxBytes);
-    const start = mode === "tail" ? info.size - length : 0;
+    const start = info.size - length;
     const buffer = Buffer.alloc(length);
     let offset = 0;
     while (offset < length) {
@@ -387,7 +486,7 @@ async function readBoundedFile(path: string, maxBytes: number, mode: "head" | "t
       if (bytesRead === 0) break;
       offset += bytesRead;
     }
-    return { text: buffer.toString("utf8", 0, offset), mtimeMs: info.mtimeMs, truncatedHead: start > 0 };
+    return { text: buffer.toString("utf8", 0, offset), mtimeMs: info.mtimeMs, oversized: start > 0 };
   } catch {
     return undefined;
   } finally {

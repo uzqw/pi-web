@@ -166,6 +166,52 @@ describe("subagent run progress", () => {
     // first line of the window are not counted.
     expect(progress?.children[0]).toMatchObject({ toolCount: 1, lastTool: "read" });
   });
+
+  it("keeps a run whose status file exceeds the read budget, marked oversized", async () => {
+    await writeRun({ statusText: JSON.stringify({ state: "running", startedAt: 1_000, steps: [], filler: "x".repeat(2 * 1024 * 1024) }) });
+
+    const progress = await readSubagentProgress(RUN_ID, { runsRoot, now: () => 2_000 });
+
+    // A run that cannot be described in full is still a run: dropping it would make the
+    // dispatch card look like nothing was ever started.
+    expect(progress).toMatchObject({ runId: RUN_ID, state: "running", children: [], statusOversized: true });
+  });
+
+  it("does not re-read session logs while the status file is unchanged", async () => {
+    const sessionFile = await writeSessionLog(`${RUN_ID}-memo.jsonl`, [
+      JSON.stringify({ recordType: "tool_start", toolName: "read" }),
+    ]);
+    const status = { state: "running", startedAt: 1_000, steps: [{ label: "one", status: "running", startedAt: 1_000, sessionFile }] };
+    await writeRun({ status });
+
+    await expect(readSubagentProgress(RUN_ID, { runsRoot, now: () => 2_000 })).resolves.toMatchObject({
+      children: [{ toolCount: 1, lastTool: "read", elapsedMs: 1_000 }],
+    });
+
+    // The lane log is gone, yet the answer still reports it: an unchanged status file
+    // costs one stat, not another parse and log read. Only the clock keeps moving.
+    await rm(sessionFile);
+    await expect(readSubagentProgress(RUN_ID, { runsRoot, now: () => 3_000 })).resolves.toMatchObject({
+      children: [{ toolCount: 1, lastTool: "read", elapsedMs: 2_000 }],
+    });
+
+    // A fresh status write invalidates it.
+    const statusFile = join(runsRoot, "pi-subagents-test", "async-subagent-runs", RUN_ID, "status.json");
+    await writeFile(statusFile, JSON.stringify(status), "utf8");
+    await utimes(statusFile, new Date(9_000), new Date(9_000));
+    await expect(readSubagentProgress(RUN_ID, { runsRoot, now: () => 3_000 })).resolves.toMatchObject({
+      children: [{ toolCount: 0 }],
+    });
+  });
+
+  it("keeps lane order when a run has more lanes than the read fan-out", async () => {
+    const steps = Array.from({ length: 12 }, (_unused, index) => ({ label: `lane ${String(index)}`, workflowKey: `lane-${String(index)}`, status: "running", startedAt: 1_000 }));
+    await writeRun({ status: { state: "running", startedAt: 1_000, steps } });
+
+    const progress = await readSubagentProgress(RUN_ID, { runsRoot, now: () => 2_000 });
+
+    expect(progress?.children.map((child) => child.key)).toEqual(Array.from({ length: 12 }, (_unused, index) => `lane-${String(index)}`));
+  });
 });
 
 describe("GET /api/subagent-runs/:runId/progress", () => {
@@ -215,6 +261,33 @@ describe("GET /api/subagent-runs/:runId/progress", () => {
         expect(response.json()).toEqual({ error: "Subagent run not found" });
       }
       expect(request).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("answers the dock for the local machine and refuses another machine's session", async () => {
+    const sessionFile = `/home/someone/.pi/agent/sessions/--work--/2026-11-09T01-51-36-357Z_aaaaaaaa-0000-4000-8000-000000000001.jsonl`;
+    await writeRunAt("aaaaaaaa-0000-4000-8000-000000000001", { runId: "aaaaaaaa-0000-4000-8000-000000000001", sessionId: sessionFile, mode: "single", state: "running", startedAt: 1_000 });
+    const app = await buildApp({
+      sessionDaemon: { request: () => Promise.reject(new Error("sessiond is offline")), requestStream: () => Promise.reject(new Error("sessiond is offline")), connectWebSocket: () => { throw new Error("sessiond is offline"); } },
+      subagentRunsRoot: runsRoot,
+      clientDist: false,
+      logger: false,
+    });
+
+    try {
+      const local = await app.inject({ method: "GET", url: "/api/subagent-runs?sessionId=aaaaaaaa-0000-4000-8000-000000000001&machineId=local" });
+      expect(local.json()).toMatchObject({ supported: true, runs: [{ runId: "aaaaaaaa-0000-4000-8000-000000000001", mode: "single" }] });
+      // A client written before machines existed still means this host.
+      const withoutMachine = await app.inject({ method: "GET", url: "/api/subagent-runs?sessionId=aaaaaaaa-0000-4000-8000-000000000001" });
+      expect(withoutMachine.json()).toMatchObject({ supported: true });
+
+      // An empty list here would read as "nothing is running" on a host that cannot see
+      // the session's temp directory at all.
+      const remote = await app.inject({ method: "GET", url: "/api/subagent-runs?sessionId=aaaaaaaa-0000-4000-8000-000000000001&machineId=other-host" });
+      expect(remote.statusCode).toBe(200);
+      expect(remote.json()).toEqual({ supported: false, machineId: "other-host" });
     } finally {
       await app.close();
     }

@@ -468,6 +468,12 @@ export interface SubagentRunProgress {
   updatedAt?: number;
   totalMs?: number;
   children: SubagentProgressChild[];
+  /**
+   * The run's status file is larger than the host reads in one pass, so `state` and
+   * `children` may be incomplete. Set instead of dropping the run: a truncated answer
+   * still tells the reader the run exists.
+   */
+  statusOversized?: boolean;
 }
 
 /** One async subagent run of the open session, as the composer dock lists it. */
@@ -477,9 +483,21 @@ export interface SessionSubagentRun extends SubagentRunProgress {
 }
 
 /** Runs belonging to one session, newest first. */
-export interface SessionSubagentRunsResponse {
+export interface SessionSubagentRunsListing {
+  supported: true;
   runs: SessionSubagentRun[];
 }
+
+/**
+ * Answer for a session whose runs live on another machine: the queried host cannot read
+ * them, and an empty list would read as "nothing is running".
+ */
+export interface UnsupportedSessionSubagentRuns {
+  supported: false;
+  machineId: string;
+}
+
+export type SessionSubagentRunsResponse = SessionSubagentRunsListing | UnsupportedSessionSubagentRuns;
 
 export type ServerNoticeSeverity = "info" | "warning" | "error";
 

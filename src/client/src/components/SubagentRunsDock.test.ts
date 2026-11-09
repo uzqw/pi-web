@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionSubagentRunsResponse } from "../../../shared/apiTypes";
+import type { SessionSubagentRunsListing } from "../../../shared/apiTypes";
 import "./SubagentRunsDock";
 import { SubagentRunsDock } from "./SubagentRunsDock";
 
@@ -15,6 +15,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.replaceChildren();
+  Reflect.deleteProperty(document, "visibilityState");
   globalThis.localStorage.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -32,6 +33,7 @@ describe("subagent runs dock", () => {
       ["completed", "ui", "1.0s", "write", "Added the progress card."],
     ]);
     expect(new URL(requestUrl(fetchMock, 0)).searchParams.get("sessionId")).toBe(SESSION_ID);
+    expect(new URL(requestUrl(fetchMock, 0)).searchParams.get("machineId")).toBe("local");
 
     await vi.advanceTimersByTimeAsync(2_000);
     await settle(dock);
@@ -41,11 +43,52 @@ describe("subagent runs dock", () => {
   });
 
   it("renders nothing for a session without recent runs", async () => {
-    stubSequenceFetch([{ runs: [] }]);
+    stubSequenceFetch([{ supported: true, runs: [] }]);
     const dock = mount(SESSION_ID);
     await settle(dock);
 
     expect(dock.renderRoot.querySelector(".dock")).toBeNull();
+  });
+
+  it("never asks this host for a session on another machine", async () => {
+    const fetchMock = stubSequenceFetch([{ supported: false, machineId: "remote-host" }]);
+    const dock = mount(SESSION_ID, "remote-host");
+    await settle(dock);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dock.renderRoot.querySelector(".dock")).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await settle(dock);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops polling when the host says it does not hold the session's runs", async () => {
+    const fetchMock = stubSequenceFetch([{ supported: false, machineId: "remote-host" }]);
+    const dock = mount(SESSION_ID);
+    await settle(dock);
+
+    expect(dock.renderRoot.querySelector(".dock")).toBeNull();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await settle(dock);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("arms no timer while the tab is hidden and refreshes as soon as it is visible", async () => {
+    const fetchMock = stubSequenceFetch([runsResponse("completed"), runsResponse("completed")]);
+    setVisibility("hidden");
+    const dock = mount(SESSION_ID);
+    await settle(dock);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle(dock);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    setVisibility("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle(dock);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("collapses to a single summary line and remembers the choice", async () => {
@@ -67,6 +110,29 @@ describe("subagent runs dock", () => {
     expect(reopened.renderRoot.querySelector(".dock-body")).toBeNull();
   });
 
+  it("loads the newly selected session while the previous request is still open", async () => {
+    const otherSessionId = "01a1be00-f5a5-72bd-ac21-7c0d810e4830";
+    const pending: ((response: Response) => void)[] = [];
+    const fetchMock = vi.fn<FetchLike>(() => new Promise<Response>((resolve) => { pending.push(resolve); }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const dock = mount(SESSION_ID);
+    await settle(dock);
+    dock.sessionId = otherSessionId;
+    await settle(dock);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(requestUrl(fetchMock, 1)).searchParams.get("sessionId")).toBe(otherSessionId);
+
+    // The previous session's answer arrives late and must not replace the new rows.
+    pending[0]?.(jsonResponse(runsResponse("running")));
+    pending[1]?.(jsonResponse(runsResponse("completed")));
+    await settle(dock);
+
+    expect(headText(dock)).toBe("Subtasks · 1 run · done");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("drops a run that finished long ago", async () => {
     const stale = runsResponse("completed");
     const onlyRun = stale.runs[0];
@@ -80,8 +146,9 @@ describe("subagent runs dock", () => {
   });
 });
 
-function runsResponse(liveState: "running" | "completed"): SessionSubagentRunsResponse {
+function runsResponse(liveState: "running" | "completed"): SessionSubagentRunsListing {
   return {
+    supported: true,
     runs: [
       {
         runId: RUN_ID,
@@ -99,12 +166,18 @@ function runsResponse(liveState: "running" | "completed"): SessionSubagentRunsRe
   };
 }
 
-function mount(sessionId: string): SubagentRunsDock {
+function mount(sessionId: string, machineId?: string): SubagentRunsDock {
   const dock = new SubagentRunsDock();
   dock.sessionId = sessionId;
+  if (machineId !== undefined) dock.machineId = machineId;
   dock.hasAsyncDispatches = true;
   document.body.append(dock);
   return dock;
+}
+
+/** Drives `document.visibilityState` the way a backgrounded tab would. */
+function setVisibility(state: "visible" | "hidden"): void {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
 }
 
 function toggle(dock: SubagentRunsDock): void {

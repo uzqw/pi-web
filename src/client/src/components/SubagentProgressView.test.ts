@@ -14,6 +14,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.replaceChildren();
+  Reflect.deleteProperty(document, "visibilityState");
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -78,17 +79,86 @@ describe("subagent progress view", () => {
     expect(new URL(requestUrl(fetchMock, 0)).pathname).toBe("/api/subagent-runs/run%2F..%2Fother/progress");
   });
 
-  it("renders nothing and stops polling when the host has no such run", async () => {
-    const fetchMock = stubSequenceFetch([notFoundResponse()]);
+  it("retries a not-yet-written run with backoff and then stops", async () => {
+    const fetchMock = stubSequenceFetch(Array.from({ length: 12 }, () => notFoundResponse()));
     const view = mount(RUN_ID);
     await settle(view);
 
     expect(view.renderRoot.querySelector(".subagent-progress")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    // 500ms, 1s, 2s, 4s, 4s: five retries after the first answer, then the run is gone
+    // for good on this host.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle(view);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle(view);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("shows the run once its directory appears after the dispatch", async () => {
+    const fetchMock = stubSequenceFetch([notFoundResponse(), jsonResponse(runningSnapshot())]);
+    const view = mount(RUN_ID);
+    await settle(view);
+    expect(view.renderRoot.querySelector(".subagent-progress")).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(500);
+    await settle(view);
+
+    expect(header(view)).toEqual(["Subtasks · 2", "running"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("arms no timer while the tab is hidden and refreshes as soon as it is visible", async () => {
+    const fetchMock = stubSequenceFetch([jsonResponse(runningSnapshot()), jsonResponse(completedSnapshot())]);
+    setVisibility("hidden");
+    const view = mount(RUN_ID);
     await settle(view);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await settle(view);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    setVisibility("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle(view);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(header(view)).toEqual(["Subtasks · 2", "completed"]);
+  });
+
+  it("moves to a new run while the previous request is still open", async () => {
+    const otherRunId = "9c8b7a65-4321-4fed-8cba-0987654321fe";
+    const pending: ((response: Response) => void)[] = [];
+    const fetchMock = vi.fn<FetchLike>(() => new Promise<Response>((resolve) => { pending.push(resolve); }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = mount(RUN_ID);
+    await settle(view);
+    view.runId = otherRunId;
+    await settle(view);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(requestUrl(fetchMock, 1)).pathname).toBe(`/api/subagent-runs/${otherRunId}/progress`);
+
+    // The first run's answer arrives late; the card must show the run it was switched to.
+    pending[0]?.(jsonResponse(runningSnapshot()));
+    pending[1]?.(jsonResponse({ ...completedSnapshot(), runId: otherRunId }));
+    await settle(view);
+
+    expect(header(view)).toEqual(["Subtasks · 2", "completed"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a run whose status file is too large to read on the card", async () => {
+    stubSequenceFetch([jsonResponse({ runId: RUN_ID, state: "running", children: [], statusOversized: true })]);
+    const view = mount(RUN_ID);
+    await settle(view);
+
+    expect(header(view)).toEqual(["Subtasks · 0", "running"]);
+    expect(text(view.renderRoot, ".lane-note")).toBe("Status file too large to read");
   });
 
   it("keeps sub-minute lane times in tenths and switches to minutes after a minute", () => {
@@ -128,6 +198,11 @@ function mount(runId: string): SubagentProgressView {
 async function settle(view: SubagentProgressView): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
   await view.updateComplete;
+}
+
+/** Drives `document.visibilityState` the way a backgrounded tab would. */
+function setVisibility(state: "visible" | "hidden"): void {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
 }
 
 function header(view: SubagentProgressView): string[] {

@@ -7,6 +7,8 @@ export default defineConfig({
     alias: { "@jmfederico/pi-web/server-plugin-api": fileURLToPath(new URL("./src/server-plugin-api.ts", import.meta.url)) },
   },
   test: {
+    // Restores Web Storage on runtimes whose global accessor shadows happy-dom's.
+    setupFiles: ["./src/test/vitest.setup.ts"],
     include: ["src/**/*.test.ts", "pi-web-plugins/**/*.test.ts", "pi-packages/**/*.test.ts", "scripts/**/*.test.mjs"],
   },
 });

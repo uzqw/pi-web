@@ -32,6 +32,7 @@ import {
   WorkspaceProviderRegistry,
 } from "./workspaces/workspaceProviderRegistry.js";
 import { sessiondSocketPath } from "../sessiond/config.js";
+import { registerBrowserRequestGuard } from "./browserRequestGuard.js";
 import {
   PI_WEB_HOST_PI_SESSIONS_CAPABILITY,
   PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY,
@@ -113,6 +114,14 @@ if (serverPluginRecovery.safeStartDiagnostic !== undefined) {
 }
 await app.register(fastifyWebsocket);
 installPluginBackendChannelWebSocketPayloadLimit(app.websocketServer);
+// The daemon serves its own API and WebSocket stream, and a page on any origin can
+// open a WebSocket without a CORS preflight. The web/API edge guards its requests;
+// this process needs the same admission rule for the listeners it owns, including
+// the unix socket, whose clients send `Host: localhost`.
+registerBrowserRequestGuard(app, config.allowedHosts);
+if (config.allowedHosts === true) {
+  app.log.warn("allowedHosts is true: every hostname is admitted, including names an attacker can point at this machine");
+}
 let serverQuiescing = false;
 app.addHook("onRequest", (_request, reply, done) => {
   if (!serverQuiescing) {

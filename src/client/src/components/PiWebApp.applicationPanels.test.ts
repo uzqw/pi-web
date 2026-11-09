@@ -66,6 +66,7 @@ it("uses bundled Info with no project, workspace or session and follows selectio
   expect(panel.shadowRoot?.textContent).toContain("remote machine");
   expect(panel.shadowRoot?.textContent).toContain("Workspace");
   expect(panel.shadowRoot?.textContent).toContain("/repo");
+  await openNavigationTab(app, "Workspaces");
   expect(app.shadowRoot?.querySelector("app-navigation-panel")?.shadowRoot?.querySelector("workspace-list")?.shadowRoot?.textContent).toContain("folder");
 
   patchState(app, { selectedProject: undefined, selectedWorkspace: undefined });
@@ -563,6 +564,16 @@ function patchState(app: PiWebApp, patch: Partial<AppState>): void {
   const state: unknown = Reflect.get(app, "state");
   if (typeof state !== "object" || state === null) throw new Error("Expected app state");
   Reflect.set(app, "state", { ...state, ...patch });
+}
+
+// Desktop navigation mounts only the active section, so a test that inspects a
+// list must open its tab first instead of assuming every list is in the DOM.
+async function openNavigationTab(app: PiWebApp, name: string): Promise<void> {
+  const navigation = app.shadowRoot?.querySelector("app-navigation-panel");
+  const tab = navigation?.shadowRoot?.querySelector<HTMLButtonElement>(`.section-tab[aria-label="${name}"]`);
+  if (tab === null || tab === undefined) throw new Error(`Expected a ${name} navigation tab`);
+  tab.click();
+  await settle(app);
 }
 
 async function settle(element: LitElement): Promise<void> {

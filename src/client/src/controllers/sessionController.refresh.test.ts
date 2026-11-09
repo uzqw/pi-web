@@ -6,6 +6,12 @@ import { SessionController } from "./sessionController";
 import type { NavigationFreshness } from "./types";
 import { transcriptSnapshotFixture, defaultApi, deferred, emptyPage, FakeSocket, oldSession, replacementSession, sessionLookupId, status, workspace, type AppState, type MessagePage, type SessionStatus, type SessionStreamSnapshot } from "./sessionController.testSupport";
 
+// Stored history is served from sessionStorage on selection, so a cache written
+// by one test would otherwise answer the next one.
+afterEach(() => {
+  sessionStorage.clear();
+});
+
 function page(text: string, total: number): MessagePage {
   return { messages: [{ role: "assistant", content: text }], start: 0, total };
 }

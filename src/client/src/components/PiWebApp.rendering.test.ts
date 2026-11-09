@@ -3,7 +3,7 @@
 import { LitElement, html } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState, type AppState } from "../appState";
-import type { SessionInfo, SessionStatus, SessionWarning, Workspace } from "../api";
+import { workspacesApi, type SessionInfo, type SessionStatus, type SessionWarning, type Workspace } from "../api";
 import { SessionController } from "../controllers/sessionController";
 import { reportBrowserError, sessionBrowserErrorScope, workspaceBrowserErrorScope, type BrowserErrorRecovery } from "../browserErrors";
 import { machineSessionKey } from "../machineKeys";
@@ -45,6 +45,9 @@ beforeEach(() => {
   unexpectedRequest.mockClear();
   window.history.replaceState(null, "", "/");
   vi.stubGlobal("fetch", unexpectedRequest);
+  // The navigation header reads the workspace branch on selection; it is app
+  // state, not something these rendering-boundary tests exercise.
+  vi.spyOn(workspacesApi, "workspaceBranch").mockResolvedValue({ branch: "main" });
   // Scroll scheduling is not under test; happy-dom supplies no layout metrics.
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
@@ -540,6 +543,7 @@ describe("application rendering boundaries", () => {
     expect(app.shadowRoot?.querySelector("workspace-panel")?.shadowRoot?.textContent).toContain("Refreshed: no session");
     expect(app.shadowRoot?.querySelector("app-mobile-main-tabs")?.shadowRoot?.querySelector(".tab-badge")?.textContent).toBe("Refreshed");
     const navigation = app.shadowRoot?.querySelector("app-navigation-panel");
+    await openNavigationTab(app, "Workspaces");
     expect(navigation?.shadowRoot?.querySelector("workspace-list")?.shadowRoot?.textContent).toContain("Refreshed");
 
     panelRender.mockClear();
@@ -777,6 +781,16 @@ function patchState(app: PiWebApp, patch: Partial<AppState>): void {
   const state: unknown = Reflect.get(app, "state");
   if (typeof state !== "object" || state === null) throw new Error("Expected app state");
   Reflect.set(app, "state", { ...state, ...patch });
+}
+
+// Desktop navigation mounts only the active section, so a test that inspects a
+// list must open its tab first instead of assuming every list is in the DOM.
+async function openNavigationTab(app: PiWebApp, name: string): Promise<void> {
+  const navigation = app.shadowRoot?.querySelector("app-navigation-panel");
+  const tab = navigation?.shadowRoot?.querySelector<HTMLButtonElement>(`.section-tab[aria-label="${name}"]`);
+  if (tab === null || tab === undefined) throw new Error(`Expected a ${name} navigation tab`);
+  tab.click();
+  await settle(app);
 }
 
 async function settle(element: LitElement): Promise<void> {

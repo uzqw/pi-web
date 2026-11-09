@@ -1947,6 +1947,11 @@ export class PiWebApp extends LitElement {
     cleanupSessions: () => { this.openSessionCleanupDialog(); },
     focusNavigationTarget: (target: NavigationFocusTarget) => { void this.focusNavigationTarget(target); },
     cancelKeyboardNavigation: () => { void this.focusChatComposer(); },
+    changePinnedProjects: (ids: string[]) => { this.savePreference(PINNED_PROJECTS_PREFERENCE_KEY, ids); },
+    changePinnedWorkspaces: (ids: string[]) => { this.savePreference(PINNED_WORKSPACES_PREFERENCE_KEY, ids); },
+    changePinnedSessions: (ids: string[]) => { this.savePreference(PINNED_SESSIONS_PREFERENCE_KEY, ids); },
+    selectTab: (section: NavigationSection) => { this.navigationSections.expand(section); },
+    jumpToActivity: (item: NavigationActivityItem) => { void this.jumpToActivity(item); },
   };
 
   private workspaceDeletionInput: AppState["workspaceDeletionRuns"] | undefined;
@@ -1984,9 +1989,9 @@ export class PiWebApp extends LitElement {
         .pinnedProjectIds=${this.state.pinnedProjectIds}
         .pinnedWorkspaceIds=${this.state.pinnedWorkspaceIds}
         .pinnedSessionIds=${this.state.pinnedSessionIds}
-        .onChangePinnedProjects=${(ids: string[]) => { this.savePreference(PINNED_PROJECTS_PREFERENCE_KEY, ids); }}
-        .onChangePinnedWorkspaces=${(ids: string[]) => { this.savePreference(PINNED_WORKSPACES_PREFERENCE_KEY, ids); }}
-        .onChangePinnedSessions=${(ids: string[]) => { this.savePreference(PINNED_SESSIONS_PREFERENCE_KEY, ids); }}
+        .onChangePinnedProjects=${this.navigationActions.changePinnedProjects}
+        .onChangePinnedWorkspaces=${this.navigationActions.changePinnedWorkspaces}
+        .onChangePinnedSessions=${this.navigationActions.changePinnedSessions}
         .collapsible=${true}
         .compact=${this.appShell.isMobileNavigationLayout}
         .tabbed=${!this.appShell.isMobileNavigationLayout}
@@ -2020,8 +2025,8 @@ export class PiWebApp extends LitElement {
         .onCleanupSessions=${this.navigationActions.cleanupSessions}
         .onFocusNavigationTarget=${this.navigationActions.focusNavigationTarget}
         .onCancelKeyboardNavigation=${this.navigationActions.cancelKeyboardNavigation}
-        .onSelectTab=${(section: NavigationSection) => { this.navigationSections.expand(section); }}
-        .onJumpToActivity=${(item: NavigationActivityItem) => { void this.jumpToActivity(item); }}
+        .onSelectTab=${this.navigationActions.selectTab}
+        .onJumpToActivity=${this.navigationActions.jumpToActivity}
 
       ></app-navigation-panel>
     `;

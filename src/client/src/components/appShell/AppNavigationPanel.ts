@@ -188,6 +188,9 @@ export class AppNavigationPanel extends LitElement {
   // Stable child inputs delegate at invocation time, never capturing old props.
   private readonly childCallbacks = {
     toggleProjects: () => { this.onToggleProjects?.(); },
+    togglePinnedProjects: (ids: string[]) => { this.onChangePinnedProjects?.(ids); },
+    togglePinnedWorkspaces: (ids: string[]) => { this.onChangePinnedWorkspaces?.(ids); },
+    togglePinnedSessions: (ids: string[]) => { this.onChangePinnedSessions?.(ids); },
     selectProject: (project: Project) => this.onSelectProject?.(project),
     closeProject: (project: Project) => this.onCloseProject?.(project),
     toggleWorkspaces: () => { this.onToggleWorkspaces?.(); },
@@ -400,7 +403,7 @@ export class AppNavigationPanel extends LitElement {
         .selected=${this.selectedProject}
         .statusSnapshot=${this.selectedMachineStatusSnapshot()}
         .pinnedIds=${this.pinnedProjectIds}
-        .onChangePinnedIds=${(ids: string[]) => this.onChangePinnedProjects?.(ids)}
+        .onChangePinnedIds=${this.childCallbacks.togglePinnedProjects}
         .collapsible=${this.collapsible}
         .collapsed=${this.projectsCollapsed}
         .onToggleCollapsed=${this.childCallbacks.toggleProjects}
@@ -422,7 +425,7 @@ export class AppNavigationPanel extends LitElement {
         .statusSnapshot=${this.selectedMachineStatusSnapshot()}
         .deletingWorkspaceIds=${this.deletingWorkspaceIds}
         .pinnedIds=${this.pinnedWorkspaceIds}
-        .onChangePinnedIds=${(ids: string[]) => this.onChangePinnedWorkspaces?.(ids)}
+        .onChangePinnedIds=${this.childCallbacks.togglePinnedWorkspaces}
         .collapsible=${this.collapsible}
         .collapsed=${this.workspacesCollapsed}
         .workspaceLabelItems=${this.workspaceLabelItems}
@@ -448,7 +451,7 @@ export class AppNavigationPanel extends LitElement {
         .startingCount=${this.startingSessionCount}
         .canStart=${this.canStartSession}
         .pinnedIds=${this.pinnedSessionIds}
-        .onChangePinnedIds=${(ids: string[]) => this.onChangePinnedSessions?.(ids)}
+        .onChangePinnedIds=${this.childCallbacks.togglePinnedSessions}
         .collapsible=${this.collapsible}
         .collapsed=${this.sessionsCollapsed}
         .onToggleCollapsed=${this.childCallbacks.toggleSessions}

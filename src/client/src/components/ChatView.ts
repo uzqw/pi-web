@@ -40,6 +40,7 @@ import "./ConversationMeter";
 import "./FormattedText";
 import type { MarkdownWorkspaceContext } from "../formatting/workspaceLinks";
 import "./ToolExecutionView";
+import { asyncSubagentRunId } from "./SubagentProgressView";
 import { transcriptImageSource } from "./TranscriptImage";
 import type { ImageOpenDetail } from "./ImagePresentation";
 import { ImageLayoutScrollController } from "./ImageLayoutScrollController";
@@ -140,6 +141,14 @@ export function chatMessageGroupClassName(defaultOpen: boolean): string {
 /** The disclosure summary label for an event group, distinguishing the live tail. */
 export function chatMessageGroupLabel(defaultOpen: boolean): string {
   return defaultOpen ? "live events" : "events";
+}
+
+/**
+ * A collapsed event group renders no cards at all, so a group holding an async
+ * subagent dispatch opens by default: its lane progress is the reason to look.
+ */
+export function groupShowsAsyncSubagent(messages: readonly ChatLine[]): boolean {
+  return messages.some((message) => message.parts.some((part) => part.type === "toolExecution" && asyncSubagentRunId(part) !== undefined));
 }
 
 /** Whether a queued-message section shows the server clear-queue action. */
@@ -478,7 +487,7 @@ export class ChatView extends LitElement {
             groups,
             (group) => group.kind === "group" ? this.groupRenderKey(group.startIndex) : this.messageAnchorKey(group.index),
             (group, index) => {
-              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, this.isLiveTailGroup(groups, index), entryActionHeaders);
+              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, this.isLiveTailGroup(groups, index) || groupShowsAsyncSubagent(group.messages), entryActionHeaders);
               if (group.kind === "tool-image") return this.renderToolImageOutput(group.message, group.index, entryActionHeaders, group.toolName);
               return this.renderMessage(group.message, group.index, entryActionHeaders);
             },
@@ -708,7 +717,6 @@ export class ChatView extends LitElement {
   private isLiveTailGroup(groups: ChatGroup[], index: number): boolean {
     return index === groups.length - 1 && this.isSessionLive();
   }
-
   private isSessionLive(): boolean {
     return this.isSendingPrompt
       || this.status?.isStreaming === true

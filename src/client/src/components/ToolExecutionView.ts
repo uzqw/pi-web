@@ -1,6 +1,8 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { writeClipboardText } from "../clipboard";
+import "./SubagentProgressView";
+import { asyncSubagentRunId } from "./SubagentProgressView";
 import type { ToolExecutionPart } from "./shared";
 
 const MAX_COLLAPSED_DIFF_LINES = 180;
@@ -45,12 +47,23 @@ export class ToolExecutionView extends LitElement {
             <span class="status-label">${statusLabel(execution.status)}</span>
           </div>
         </div>
+        ${this.renderSubagentProgress(execution)}
 
         ${previewMismatch ? html`<p class="notice">Applied diff differs from the preview.</p>` : null}
         ${errorText === undefined || errorText === "" ? null : html`<pre class="error-text">${errorText}</pre>`}
         ${visibleDiff === undefined ? this.renderTextBody(bodyText, execution.status === "error", target) : this.renderDiffBody(visibleDiff, actualDiff === undefined ? "Preview diff" : "Applied diff", target)}
       </section>
     `;
+  }
+
+  /**
+   * Only an async subagent run has live lane progress on disk; a foreground
+   * `subagent` call finishes inside the tool call itself and has no async id.
+   */
+  private renderSubagentProgress(execution: ToolExecutionPart) {
+    const runId = asyncSubagentRunId(execution);
+    if (runId === undefined) return null;
+    return html`<subagent-progress .runId=${runId}></subagent-progress>`;
   }
 
   private renderHeaderTarget(target: ToolTarget | undefined) {

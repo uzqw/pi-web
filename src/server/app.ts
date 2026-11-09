@@ -16,6 +16,7 @@ import { listDirectorySuggestions } from "./projects/directorySuggestions.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import { loadServerPluginRecoveryConfig } from "../serverPluginRecovery.js";
 import { registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
+import { registerSubagentProgressRoutes } from "./subagentProgress.js";
 import { registerWorkspaceExplorerRoutes } from "./workspaceExplorerRoutes.js";
 import { registerProjectTrustRoutes } from "./projectTrustRoutes.js";
 import { registerWorkspaceDeletionRoutes } from "./workspaces/workspaceDeletionRoutes.js";
@@ -56,6 +57,8 @@ export interface AppDependencies {
   clientDist?: string | false;
   /** Overrides deployment-flavor detection (dev/stable asset identity) in tests. */
   deploymentFlavor?: () => Promise<PiWebDeploymentFlavor>;
+  /** Root that holds the `pi-subagents-*` runtime directories; defaults to the host temp directory. */
+  subagentRunsRoot?: string;
   logger?: FastifyServerOptions["logger"];
   /** Maximum accepted HTTP request body size in bytes. */
   bodyLimit?: number;
@@ -249,6 +252,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   registerSessionProxyRoutes(app, sessionDaemon);
   registerSessionProxyRoutes(app, sessionDaemon, "/api/machines/local");
+  // Async subagent run state lives in this web host's temp directory, next to the
+  // sessions the local daemon runs, so it is served locally rather than proxied.
+  registerSubagentProgressRoutes(app, "/api", deps.subagentRunsRoot === undefined ? {} : { runsRoot: deps.subagentRunsRoot });
   registerPairedPluginBackendProxyRoutes(app, sessionDaemon);
   registerPluginBackendChannelProxyRoutes(app, sessionDaemon);
   registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api", { config: configService });

@@ -1,6 +1,6 @@
 import { parseSessionDefaults } from "../../../shared/sessionDefaults";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
-import type { AskUserSubmission, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, FileSuggestion, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebConfigValues, PromptAttachment, ServerNoticeDismissRequest, SessionBulkMutationRef, SessionCleanupRequest, SessionModelScopeMode, SessionNotificationDismissThrough, SessionRef, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, WorkspaceRemovalRequest, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
+import type { AskUserSubmission, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, FileSuggestion, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebConfigValues, PromptAttachment, ServerNoticeDismissRequest, SessionBulkMutationRef, SessionCleanupRequest, SessionModelScopeMode, SessionNotificationDismissThrough, SessionRef, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, SessionSubagentRunsResponse, SubagentProgressChild, SubagentRunProgress, SubagentRunState, WorkspaceRemovalRequest, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
 import { request } from "./http";
 import {
@@ -367,6 +367,102 @@ function apiErrorMessage(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/**
+ * Lane progress for one async subagent run. The chat card polls this while the run
+ * is live, so an unknown run id answers 404 rather than an empty projection.
+ */
+export const subagentApi = {
+  progress: (runId: string) => request(`api/subagent-runs/${encodeURIComponent(runId)}/progress`, parseSubagentRunProgress),
+  sessionRuns: (sessionId: string) =>
+    request(`api/subagent-runs?${new URLSearchParams({ sessionId }).toString()}`, parseSessionSubagentRuns),
+};
+
+function parseSessionSubagentRuns(value: unknown): SessionSubagentRunsResponse {
+  const record = progressRecord(value, "session subagent runs");
+  const runs = record["runs"];
+  if (!Array.isArray(runs)) throw new Error("Expected array field: runs");
+  return {
+    runs: runs.map((run) => ({ ...parseSubagentRunProgress(run), mode: requiredProgressString(progressRecord(run, "session subagent run"), "mode") })),
+  };
+}
+
+function parseSubagentRunProgress(value: unknown): SubagentRunProgress {
+  const record = progressRecord(value, "subagent progress");
+  const children = record["children"];
+  if (!Array.isArray(children)) throw new Error("Expected array field: children");
+  const startedAt = optionalProgressNumber(record, "startedAt");
+  const updatedAt = optionalProgressNumber(record, "updatedAt");
+  const totalMs = optionalProgressNumber(record, "totalMs");
+  return {
+    runId: requiredProgressString(record, "runId"),
+    state: parseSubagentRunState(record["state"]),
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(updatedAt === undefined ? {} : { updatedAt }),
+    ...(totalMs === undefined ? {} : { totalMs }),
+    children: children.map(parseSubagentProgressChild),
+  };
+}
+
+function parseSubagentProgressChild(value: unknown): SubagentProgressChild {
+  const record = progressRecord(value, "progress child");
+  const toolCount = record["toolCount"];
+  if (typeof toolCount !== "number") throw new Error("Expected number field: toolCount");
+  const startedAt = optionalProgressNumber(record, "startedAt");
+  const elapsedMs = optionalProgressNumber(record, "elapsedMs");
+  const lastTool = optionalProgressString(record, "lastTool");
+  const lastText = optionalProgressString(record, "lastText");
+  const isError = record["isError"];
+  if (isError !== undefined && typeof isError !== "boolean") throw new Error("Expected optional boolean field: isError");
+  return {
+    key: requiredProgressString(record, "key"),
+    label: requiredProgressString(record, "label"),
+    agent: requiredProgressString(record, "agent"),
+    status: parseSubagentRunState(record["status"]),
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(elapsedMs === undefined ? {} : { elapsedMs }),
+    toolCount,
+    ...(lastTool === undefined ? {} : { lastTool }),
+    ...(lastText === undefined ? {} : { lastText }),
+    ...(isError === undefined ? {} : { isError }),
+  };
+}
+
+function parseSubagentRunState(value: unknown): SubagentRunState {
+  switch (value) {
+    case "pending":
+    case "running":
+    case "completed":
+    case "failed":
+    case "stopped": return value;
+    default: throw new Error("Expected subagent run state");
+  }
+}
+
+function progressRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`Expected object response: ${label}`);
+  return value;
+}
+
+function requiredProgressString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  if (typeof value !== "string") throw new Error(`Expected string field: ${key}`);
+  return value;
+}
+
+function optionalProgressString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`Expected optional string field: ${key}`);
+  return value;
+}
+
+function optionalProgressNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number") throw new Error(`Expected optional number field: ${key}`);
+  return value;
 }
 
 export interface FileSuggestionQueryOptions {

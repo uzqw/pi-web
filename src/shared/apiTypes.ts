@@ -441,6 +441,46 @@ export interface SessionRef {
   cwd: string;
 }
 
+/** Lifecycle of one async subagent run or of a single lane inside it. */
+export type SubagentRunState = "pending" | "running" | "completed" | "failed" | "stopped";
+
+/** One lane (workflow child or single run step) of a subagent run. */
+export interface SubagentProgressChild {
+  key: string;
+  label: string;
+  agent: string;
+  status: SubagentRunState;
+  startedAt?: number;
+  elapsedMs?: number;
+  /** Tools observed in the retained tail of the lane's session log. */
+  toolCount: number;
+  lastTool?: string;
+  /** Newest assistant output line, already collapsed to one short line. */
+  lastText?: string;
+  isError?: boolean;
+}
+
+/** Per-lane progress of one async subagent run, read from the host that owns it. */
+export interface SubagentRunProgress {
+  runId: string;
+  state: SubagentRunState;
+  startedAt?: number;
+  updatedAt?: number;
+  totalMs?: number;
+  children: SubagentProgressChild[];
+}
+
+/** One async subagent run of the open session, as the composer dock lists it. */
+export interface SessionSubagentRun extends SubagentRunProgress {
+  /** Launch shape the runtime recorded: `single`, `workflow`, … */
+  mode: string;
+}
+
+/** Runs belonging to one session, newest first. */
+export interface SessionSubagentRunsResponse {
+  runs: SessionSubagentRun[];
+}
+
 export type ServerNoticeSeverity = "info" | "warning" | "error";
 
 /** Browser-visibility selectors for one server notice. */

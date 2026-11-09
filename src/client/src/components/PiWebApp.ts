@@ -79,6 +79,8 @@ import { sessionRowActivityKind, sessionRowUnread, unreadSessionCount } from "./
 import "./SessionCleanupDialog";
 import "./SessionTreeNavigator";
 import "./ChatView";
+import "./SubagentRunsDock";
+import { asyncSubagentRunId } from "./SubagentProgressView";
 import type { ChatView } from "./ChatView";
 import "./PromptEditor";
 import type { PromptEditor } from "./PromptEditor";
@@ -3879,6 +3881,11 @@ export class PiWebApp extends LitElement {
     return visibleBrowserErrors(state.browserErrors, browserErrorContextForRoute(state, readRoute()));
   }
 
+  /** True when the loaded transcript carries an async subagent dispatch to watch. */
+  private hasAsyncSubagentDispatch(state: AppState): boolean {
+    return state.messages.some((message) => message.parts.some((part) => part.type === "toolExecution" && asyncSubagentRunId(part) !== undefined));
+  }
+
   private dismissBrowserError(error: BrowserError): void {
     const browserErrors = clearBrowserError(this.state.browserErrors, error.scope, error.message);
     if (browserErrors !== this.state.browserErrors) this.setState({ browserErrors });
@@ -3903,6 +3910,7 @@ export class PiWebApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
+            <subagent-runs-dock .sessionId=${state.selectedSession.id} .hasAsyncDispatches=${this.hasAsyncSubagentDispatch(state)}></subagent-runs-dock>
             <div class="composer-area">
               <prompt-editor ?inert=${activityNoticeVisible} .promptChips=${this.selectedPromptChips()} .onRemoveChip=${this.handleRemovePromptChip} .shortcuts=${this.shortcutConfig} .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true || activityNoticeVisible} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .modelPresets=${state.modelPresets} .onPickModelPreset=${this.handlePickModelPreset} .onAddModelPreset=${this.handleAddModelPreset} .onRemoveModelPreset=${this.handleRemoveModelPreset}></prompt-editor>
               ${this.renderSessionActivityNotice()}

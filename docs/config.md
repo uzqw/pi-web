@@ -41,6 +41,16 @@ The deployment path is not a PI WEB config-file key or environment setting. The 
 
 For a nested deployment, redirect the slashless prefix to the trailing-slash URL, strip the prefix before forwarding to PI WEB, and proxy authenticated HTTP and WebSocket traffic through the same location. Relative browser and PWA URLs then stay within that prefix. See the [reverse proxy installation guide](https://pi-web.dev/install#reverse-proxy-prefix) for a complete Nginx example.
 
+## Browser host admission
+
+`allowedHosts` is enforced twice: the Vite dev server uses it for its own host check, and the web/API edge rejects any request whose `Host` is not admitted by it, plus any mutating or WebSocket request whose `Origin` does not match that `Host`. These are browser defenses against cross-site requests and DNS rebinding, not authentication: a non-browser client can set either header.
+
+- `true` admits every hostname. PI WEB logs a warning at startup because a name an attacker controls then resolves to this machine.
+- An array admits loopback names, `*.localhost`, IP literals, and the listed names. An entry starting with `.` matches that suffix and its subdomains, so `.ts.net` or `.sslip.io` trusts every name under a suffix other parties can create.
+- Leaving it unset admits only loopback names and IP literals.
+
+The policy is read once at startup, so saving a wider one takes effect after restarting the web/API service. A reverse proxy must preserve `Host` and `Origin`; forwarded headers are never consulted, and only origin-form request targets are accepted. Requests the browser sends from another origin are refused, which is why a page served from a different port or scheme needs its public address in `allowedHosts`.
+
 ## Precedence and reloads
 
 Machine-global runtime values are resolved as:

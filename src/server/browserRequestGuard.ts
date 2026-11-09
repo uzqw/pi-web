@@ -14,10 +14,20 @@ interface Authority {
  */
 export function registerBrowserRequestGuard(app: FastifyInstance, policy: HostAccessPolicy | undefined): void {
   // Snapshot the startup policy, like host/port. Saving config must not change
-  // admission halfway through the request that saves it.
+  // admission halfway through the request that saves it, and neither must a
+  // caller mutating the array it handed us.
+  const snapshot: HostAccessPolicy | undefined = policy === true ? true : [...(policy ?? [])];
   app.addHook("onRequest", (request, reply, done) => {
+    // Absolute-form request targets carry their own authority, and Fastify keeps
+    // it in request.url: a checked Host would not be the host actually addressed,
+    // and downstream URL resolution would honour the unchecked one.
+    if (request.raw.url?.startsWith("/") !== true) {
+      void reply.code(403).send({ error: "Only origin-form request targets are accepted." });
+      return;
+    }
+
     const host = parseAuthority(request.headers.host);
-    if (headerCount(request.raw.rawHeaders, "host") !== 1 || host === undefined || !hostnameAllowedByPolicy(host.hostname, policy)) {
+    if (headerCount(request.raw.rawHeaders, "host") !== 1 || host === undefined || !hostnameAllowedByPolicy(host.hostname, snapshot)) {
       void reply.code(403).send({ error: "Host not allowed. Add it to allowedHosts in the PI WEB config and restart the web/API service." });
       return;
     }

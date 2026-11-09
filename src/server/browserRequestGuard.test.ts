@@ -146,10 +146,34 @@ describe("browser request guard", () => {
     expect(instance.websocketServer.clients.size).toBe(0);
   });
 
-  it("keeps the startup policy after admission was already decided", async () => {
-    const instance = await guardApp([]);
-    // The guard holds its own snapshot; nothing a later request does can widen it.
+  it("keeps the policy it was registered with, even if the caller mutates it", async () => {
+    const policy = ["pi.example.com"];
+    const instance = await guardApp(policy);
+    expect((await instance.inject({ url: "/api/probe", headers: { host: "pi.example.com" } })).statusCode).toBe(200);
+    policy.push("evil.example");
     const stillBlocked = await instance.inject({ url: "/api/probe", headers: { host: "evil.example" } });
     expect(stillBlocked.statusCode).toBe(403);
+  });
+
+  it("rejects an absolute-form request target, whose authority Host cannot cover", async () => {
+    const instance = await guardApp([]);
+    const address = await instance.listen({ host: "127.0.0.1", port: 0 });
+    const { port } = new URL(address);
+    // inject() rewrites the target to origin-form, so the only way to prove this
+    // is a raw request line: a checked Host would otherwise cover an unchecked host.
+    const status = await new Promise<string>((resolve, reject) => {
+      const socket = net.connect(Number(port), "127.0.0.1");
+      let response = "";
+      socket.once("error", reject);
+      socket.on("data", (chunk: Buffer) => {
+        response += chunk.toString("utf8");
+      });
+      socket.once("close", () => {
+        resolve(response.split("\r\n", 1)[0] ?? "");
+      });
+      socket.write("GET http://evil.example/api/probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    });
+    expect(status).toContain("403");
+    expect(hits).toEqual([]);
   });
 });

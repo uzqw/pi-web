@@ -132,7 +132,11 @@ async function readEffectiveConfig(config: Pick<PiWebConfigService, "read">) {
 
 async function startupAllowedHosts(config: Pick<PiWebConfigService, "read">, app: FastifyInstance): Promise<HostAccessPolicy | undefined> {
   try {
-    return (await config.read()).effectiveConfig.allowedHosts;
+    const allowedHosts = (await config.read()).effectiveConfig.allowedHosts;
+    if (allowedHosts === true) {
+      app.log.warn("allowedHosts is true: every hostname is admitted, including names an attacker can point at this machine");
+    }
+    return allowedHosts;
   } catch (error) {
     // An unreadable config must not widen admission: the guard still refuses
     // foreign hostnames, and the config routes report the parse error.

@@ -17,6 +17,7 @@ import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import { loadServerPluginRecoveryConfig } from "../serverPluginRecovery.js";
 import { registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 import { registerSubagentProgressRoutes } from "./subagentProgress.js";
+import { registerBrowserRequestGuard } from "./browserRequestGuard.js";
 import { registerWorkspaceExplorerRoutes } from "./workspaceExplorerRoutes.js";
 import { registerProjectTrustRoutes } from "./projectTrustRoutes.js";
 import { registerWorkspaceDeletionRoutes } from "./workspaces/workspaceDeletionRoutes.js";
@@ -43,6 +44,7 @@ import { installPluginBackendChannelWebSocketPayloadLimit } from "./webSocketBri
 import { registerPairedPluginBackendProxyRoutes } from "./plugins/pluginBackendProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
 import type { Project, WorkspaceEffectiveConfig, WorkspaceProviderResolution } from "./types.js";
+import type { HostAccessPolicy } from "../shared/hostAccess.js";
 
 export interface AppDependencies {
   projects?: ProjectService;
@@ -128,6 +130,17 @@ async function readEffectiveConfig(config: Pick<PiWebConfigService, "read">) {
   return (await config.read()).effectiveConfig;
 }
 
+async function startupAllowedHosts(config: Pick<PiWebConfigService, "read">, app: FastifyInstance): Promise<HostAccessPolicy | undefined> {
+  try {
+    return (await config.read()).effectiveConfig.allowedHosts;
+  } catch (error) {
+    // An unreadable config must not widen admission: the guard still refuses
+    // foreign hostnames, and the config routes report the parse error.
+    app.log.warn({ err: error }, "failed to read allowedHosts; restricting hostnames");
+    return undefined;
+  }
+}
+
 async function desiredPluginAgentDir(
   profiles: ActiveAgentProfileProvider,
   config: Pick<PiWebConfigService, "read">,
@@ -184,6 +197,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const projects = deps.projects ?? new ProjectService(new ProjectStore());
   const configService = deps.config ?? createFilePiWebConfigService();
   const readConfig = () => readEffectiveConfig(configService);
+  // Admission is decided before any handler runs, from the startup policy: a
+  // request that saves a new policy must not be admitted under that policy.
+  registerBrowserRequestGuard(app, await startupAllowedHosts(configService, app));
   const sessionDaemon = deps.sessionDaemon ?? new SessionDaemonClient();
   const daemonWorkspaces = new SessionDaemonWorkspaceCatalog(sessionDaemon);
   const workspaces = deps.workspaceCatalog ?? daemonWorkspaces;

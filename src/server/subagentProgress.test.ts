@@ -59,6 +59,96 @@ describe("session subagent runs", () => {
   });
 });
 
+describe("polling under a growing history", () => {
+  const SESSION_ID = "01a1be00-f5a5-72bd-ac21-7c0d810e482f";
+  const OTHER_SESSION_FILE = "/sessions/2026-11-09T02-00-00-000Z_ffffffff-0000-4000-8000-000000000000.jsonl";
+  const sessionFile = `/sessions/2026-11-09T01-51-36-357Z_${SESSION_ID}.jsonl`;
+
+  it("picks up a run directory that appears after a previous listing", async () => {
+    await writeRunAt("bbbbbbbb-0000-4000-8000-000000000001", { runId: "bbbbbbbb-0000-4000-8000-000000000001", sessionId: sessionFile, mode: "single", state: "running", startedAt: 1_000 });
+    expect((await listSessionSubagentRuns(SESSION_ID, { runsRoot })).map((run) => run.runId)).toEqual(["bbbbbbbb-0000-4000-8000-000000000001"]);
+
+    // The group directory's mtime is what tells the listing cache a dispatch started.
+    await writeRunAt("bbbbbbbb-0000-4000-8000-000000000002", { runId: "bbbbbbbb-0000-4000-8000-000000000002", sessionId: sessionFile, mode: "single", state: "running", startedAt: 2_000 });
+    expect((await listSessionSubagentRuns(SESSION_ID, { runsRoot })).map((run) => run.runId))
+      .toEqual(["bbbbbbbb-0000-4000-8000-000000000002", "bbbbbbbb-0000-4000-8000-000000000001"]);
+  });
+
+  it("still reflects a rewritten status file for a run it already knows", async () => {
+    const runDir = await writeRunAt("bbbbbbbb-0000-4000-8000-000000000003", { runId: "bbbbbbbb-0000-4000-8000-000000000003", sessionId: sessionFile, mode: "workflow", state: "running", startedAt: 1_000, steps: [{ label: "ui", status: "running", startedAt: 1_000 }] });
+    expect((await listSessionSubagentRuns(SESSION_ID, { runsRoot }))[0]?.state).toBe("running");
+
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ runId: "bbbbbbbb-0000-4000-8000-000000000003", sessionId: sessionFile, mode: "workflow", state: "completed", startedAt: 1_000, endedAt: 4_000, steps: [{ label: "ui", status: "completed", startedAt: 1_000, endedAt: 4_000 }] }), "utf8");
+    expect((await listSessionSubagentRuns(SESSION_ID, { runsRoot }))[0]?.state).toBe("completed");
+  });
+
+  it("reads a finished run's parent session once and keeps filtering from memory", async () => {
+    const runDir = await writeRunAt("bbbbbbbb-0000-4000-8000-000000000004", { runId: "bbbbbbbb-0000-4000-8000-000000000004", sessionId: OTHER_SESSION_FILE, mode: "single", state: "completed", startedAt: 1_000, endedAt: 2_000 });
+    expect(await listSessionSubagentRuns(SESSION_ID, { runsRoot })).toEqual([]);
+
+    // Repointing a finished run at this session is not something the runtime does, but
+    // it is the only way to observe whether the second poll read the file at all: the
+    // answer stays "not this session", so the parent came from memory.
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ runId: "bbbbbbbb-0000-4000-8000-000000000004", sessionId: sessionFile, mode: "single", state: "completed", startedAt: 1_000, endedAt: 2_000 }), "utf8");
+    expect(await listSessionSubagentRuns(SESSION_ID, { runsRoot })).toEqual([]);
+  });
+
+  it("answers 304 for a finished run's unchanged answer and 200 once it moves", async () => {
+    const sessionFileForRun = `/sessions/2026-11-09T01-51-36-357Z_${SESSION_ID}.jsonl`;
+    const doneId = "bbbbbbbb-0000-4000-8000-000000000006";
+    const runDir = await writeRunAt(doneId, { runId: doneId, sessionId: sessionFileForRun, mode: "single", state: "completed", startedAt: 1_000, endedAt: 2_000, steps: [] });
+    const app = await buildApp({
+      sessionDaemon: { request: () => Promise.reject(new Error("sessiond is offline")), requestStream: () => Promise.reject(new Error("sessiond is offline")), connectWebSocket: () => { throw new Error("sessiond is offline"); } },
+      subagentRunsRoot: runsRoot,
+      clientDist: false,
+      logger: false,
+    });
+    const dock = "/api/subagent-runs?sessionId=" + SESSION_ID + "&machineId=local";
+
+    try {
+      const first = await app.inject({ method: "GET", url: dock });
+      const etag = String(first.headers.etag);
+      expect(first.headers["cache-control"]).toBe("no-cache");
+
+      const unchanged = await app.inject({ method: "GET", url: dock, headers: { "if-none-match": etag } });
+      expect(unchanged.statusCode).toBe(304);
+      expect(unchanged.body).toBe("");
+
+      await writeFile(join(runDir, "status.json"), JSON.stringify({ runId: doneId, sessionId: sessionFileForRun, mode: "single", state: "completed", startedAt: 1_000, endedAt: 3_000, steps: [] }), "utf8");
+      const changed = await app.inject({ method: "GET", url: dock, headers: { "if-none-match": etag } });
+      expect(changed.statusCode).toBe(200);
+      expect(changed.json()).toMatchObject({ supported: true, runs: [{ state: "completed", totalMs: 2_000 }] });
+
+      const card = await app.inject({ method: "GET", url: `/api/subagent-runs/${doneId}/progress` });
+      const cachedCard = await app.inject({ method: "GET", url: `/api/subagent-runs/${doneId}/progress`, headers: { "if-none-match": String(card.headers.etag) } });
+      expect(cachedCard.statusCode).toBe(304);
+      expect(cachedCard.body).toBe("");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("never answers 304 for a live run, whose elapsed time moves every poll", async () => {
+    const liveId = "bbbbbbbb-0000-4000-8000-000000000007";
+    await writeRunAt(liveId, { runId: liveId, sessionId: `/sessions/2026-11-09T01-51-36-357Z_${SESSION_ID}.jsonl`, mode: "single", state: "running", startedAt: 1_000, steps: [{ label: "scout", status: "running", startedAt: 1_000 }] });
+    const app = await buildApp({
+      sessionDaemon: { request: () => Promise.reject(new Error("sessiond is offline")), requestStream: () => Promise.reject(new Error("sessiond is offline")), connectWebSocket: () => { throw new Error("sessiond is offline"); } },
+      subagentRunsRoot: runsRoot,
+      clientDist: false,
+      logger: false,
+    });
+
+    try {
+      const first = await app.inject({ method: "GET", url: `/api/subagent-runs/${liveId}/progress` });
+      const again = await app.inject({ method: "GET", url: `/api/subagent-runs/${liveId}/progress`, headers: { "if-none-match": String(first.headers.etag) } });
+      expect(again.statusCode).toBe(200);
+      expect(again.json<SubagentRunProgress>().children[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("subagent run progress", () => {
   it("reports per-lane tools, output and timing from both session log shapes", async () => {
     const transcriptLane = await writeSessionLog(`${RUN_ID}-scoring.jsonl`, [

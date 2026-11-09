@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { open, readdir, stat, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { SessionSubagentRunsResponse, SubagentProgressChild, SubagentRunProgress, SubagentRunState } from "../shared/apiTypes.js";
 
 const RUN_GROUP_PREFIX = "pi-subagents-";
@@ -14,6 +15,8 @@ const TRUNCATION_RESERVE = 3;
 const LANE_READ_CONCURRENCY = 6;
 /** Steady-state polling repeats one question per run every couple of seconds; keep the answer per status write. */
 const SNAPSHOT_CACHE_MAX_ENTRIES = 64;
+/** Run-group listings, kept per group directory write so history size stops mattering. */
+const GROUP_LISTING_CACHE_MAX_ENTRIES = 8;
 /** Runs whose state lives on this host; another machine's runs are not readable from here. */
 const LOCAL_MACHINE_ID = "local";
 /** The composer dock lists the newest handful of a session's runs; older ones stay in the chat. */
@@ -83,6 +86,25 @@ interface LaneSnapshot {
 
 const snapshotCache = new Map<string, RunSnapshot>();
 
+/**
+ * Which session launched a run never changes, so the dock's filter costs no file read
+ * once a run has been seen. Runs still being written are retried: a missing parent is
+ * not remembered, because the runtime may not have named it yet.
+ */
+const sessionIdByRunDir = new Map<string, string>();
+
+async function sessionIdOf(runDir: string): Promise<string | undefined> {
+  const known = sessionIdByRunDir.get(runDir);
+  if (known !== undefined) return known;
+  const snapshot = await loadRunSnapshot(runDir);
+  const sessionId = optionalString(snapshot.status, "sessionId");
+  // Only a finished run's parent is settled. A live run keeps being asked, because the
+  // runtime may not have named the parent in its first write.
+  const state = normalizeState(optionalString(snapshot.status, "state"));
+  if (sessionId !== undefined && state !== undefined && isTerminalState(state)) sessionIdByRunDir.set(runDir, sessionId);
+  return sessionId;
+}
+
 interface SessionTailUsage {
   toolCount: number;
   lastTool: string | undefined;
@@ -99,13 +121,25 @@ export async function findRunDir(runId: string, options: SubagentProgressOptions
   if (!RUN_ID_PATTERN.test(runId)) return undefined;
   const runsRoot = options.runsRoot ?? tmpdir();
   for (const runDir of await listRunDirs(runsRoot)) {
+    if (basename(runDir) !== runId) continue;
     // The status file, not directory presence, proves an attempt actually started.
-    if (basename(runDir) === runId) return runDir;
+    if (await isFile(join(runDir, "status.json"))) return runDir;
   }
   return undefined;
 }
 
-/** Every run directory under the host's run groups that has a status file. */
+interface GroupListing {
+  mtimeMs: number;
+  runDirs: string[];
+}
+
+/**
+ * Run directories under the host's run groups. A group directory's mtime moves when
+ * a run directory is added or removed, so history that is not being written costs one
+ * `stat` per group instead of a `readdir` per poll.
+ */
+const groupListings = new Map<string, GroupListing>();
+
 async function listRunDirs(runsRoot: string): Promise<string[]> {
   let groups: string[];
   try {
@@ -117,19 +151,46 @@ async function listRunDirs(runsRoot: string): Promise<string[]> {
   }
   const dirs: string[] = [];
   for (const group of groups) {
-    let entries;
+    const runsDirectory = join(group, RUNS_DIRECTORY);
+    let info;
     try {
-      entries = await readdir(join(group, RUNS_DIRECTORY), { withFileTypes: true });
+      info = await stat(runsDirectory);
     } catch {
       continue;
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const runDir = join(group, RUNS_DIRECTORY, entry.name);
-      if (await isFile(join(runDir, "status.json"))) dirs.push(runDir);
+    const cached = groupListings.get(runsDirectory);
+    if (cached?.mtimeMs === info.mtimeMs) {
+      dirs.push(...cached.runDirs);
+      continue;
     }
+    let entries;
+    try {
+      entries = await readdir(runsDirectory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const runDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => join(runsDirectory, entry.name));
+    rememberGroupListing(runsDirectory, { mtimeMs: info.mtimeMs, runDirs });
+    dirs.push(...runDirs);
   }
   return dirs;
+}
+
+function rememberGroupListing(runsDirectory: string, listing: GroupListing): void {
+  const previous = groupListings.get(runsDirectory);
+  if (previous !== undefined) {
+    // A run directory that is gone cannot be asked about again, so its answer goes too.
+    const present = new Set(listing.runDirs);
+    for (const staleDir of previous.runDirs) {
+      if (!present.has(staleDir)) sessionIdByRunDir.delete(staleDir);
+    }
+  }
+  groupListings.delete(runsDirectory);
+  groupListings.set(runsDirectory, listing);
+  if (groupListings.size <= GROUP_LISTING_CACHE_MAX_ENTRIES) return;
+  const oldest = groupListings.keys().next();
+  if (oldest.done === true) return;
+  groupListings.delete(oldest.value);
 }
 
 /**
@@ -161,9 +222,10 @@ export async function listSessionSubagentRuns(sessionId: string, options: Subage
   // session logs of runs the dock never shows are not read at all.
   const matches: { runId: string; snapshot: RunSnapshot }[] = [];
   for (const runDir of await listRunDirs(runsRoot)) {
-    const snapshot = await loadRunSnapshot(runDir);
-    const parentSession = optionalString(snapshot.status, "sessionId");
+    // Unrelated history is filtered out from memory: only a run of this session is read.
+    const parentSession = await sessionIdOf(runDir);
     if (parentSession?.includes(sessionId) !== true) continue;
+    const snapshot = await loadRunSnapshot(runDir);
     matches.push({ runId: optionalString(snapshot.status, "runId") ?? basename(runDir), snapshot });
   }
   matches.sort((left, right) => (optionalNumber(right.snapshot.status, "startedAt") ?? 0) - (optionalNumber(left.snapshot.status, "startedAt") ?? 0));
@@ -272,7 +334,7 @@ export function registerSubagentProgressRoutes(app: FastifyInstance, prefix = "/
   app.get<{ Params: { runId: string } }>(`${prefix}/subagent-runs/:runId/progress`, async (request, reply) => {
     const progress = await readSubagentProgress(request.params.runId, options);
     if (progress === undefined) return reply.code(404).send({ error: "Subagent run not found" });
-    return progress;
+    return revalidated(request, reply, progress);
   });
 
   // The composer dock asks for one session at a time; an unknown session is simply empty.
@@ -284,9 +346,25 @@ export function registerSubagentProgressRoutes(app: FastifyInstance, prefix = "/
     if (machineId !== LOCAL_MACHINE_ID) return { supported: false, machineId } satisfies SessionSubagentRunsResponse;
     const sessionId = request.query.sessionId;
     if (sessionId === undefined || !RUN_ID_PATTERN.test(sessionId)) return reply.code(400).send({ error: "sessionId must be a UUID" });
-    const listing: SessionSubagentRunsResponse = { supported: true, runs: await listSessionSubagentRuns(sessionId, options) };
-    return listing;
+    return revalidated(request, reply, { supported: true, runs: await listSessionSubagentRuns(sessionId, options) } satisfies SessionSubagentRunsResponse);
   });
+}
+
+/**
+ * Answer 304 for a poll that finds nothing new. Polling surfaces ask the same question
+ * every couple of seconds, and an unchanged answer must not be serialized twice or
+ * travel twice; the browser revalidates on its own because the response says so.
+ */
+function revalidated(request: FastifyRequest, reply: FastifyReply, payload: object): unknown {
+  const body = JSON.stringify(payload);
+  const etag = `"${createHash("sha1").update(body).digest("base64url")}"`;
+  reply.header("Cache-Control", "no-cache");
+  reply.header("ETag", etag);
+  const ifNoneMatch = request.headers["if-none-match"];
+  if (typeof ifNoneMatch === "string" && ifNoneMatch.split(",").some((value) => value.trim() === etag)) {
+    return reply.code(304).send();
+  }
+  return reply.type("application/json; charset=utf-8").send(body);
 }
 
 async function readLane(step: unknown, index: number, runState: SubagentRunState): Promise<LaneSnapshot> {

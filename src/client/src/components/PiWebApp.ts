@@ -54,6 +54,7 @@ import { loadExternalPlugins, type ExternalPluginLoadResult } from "../plugins/e
 import { publicPluginSelection } from "../plugins/publicContext";
 import type { DisplayedMessageActionAvailabilityContext, MessageActionAvailabilityContext, MessageActionContext, MessageActionResult } from "../../../plugin-api";
 import { messageActionMessage } from "../plugins/messageActions";
+import type { ChatLine } from "./shared";
 import { createPluginProjects } from "../plugins/projects";
 import { REQUIRED_TERMINAL_PLUGIN_ID, type TerminalPluginMode } from "../../../shared/requiredTerminalPlugin";
 import { PluginRegistry, installApplicationPanelScope, installPluginRuntimeScope, installWorkspaceLabelScope, installWorkspacePanelScope, type BrowserPluginLifecyclePhase, type PluginRegistrationFailure } from "../plugins/registry";
@@ -3887,8 +3888,17 @@ export class PiWebApp extends LitElement {
   }
 
   /** True when the loaded transcript carries an async subagent dispatch to watch. */
+  // render() asks this on every update, including every streaming token, and the
+  // scan is linear in a transcript that grows for the life of the session. The
+  // transcript array is replaced only when it changes, so identity is the key.
+  private asyncDispatchInput: readonly ChatLine[] | undefined;
+  private asyncDispatchResult = false;
+
   private hasAsyncSubagentDispatch(state: AppState): boolean {
-    return state.messages.some((message) => message.parts.some((part) => part.type === "toolExecution" && asyncSubagentRunId(part) !== undefined));
+    if (this.asyncDispatchInput === state.messages) return this.asyncDispatchResult;
+    this.asyncDispatchInput = state.messages;
+    this.asyncDispatchResult = state.messages.some((message) => message.parts.some((part) => part.type === "toolExecution" && asyncSubagentRunId(part) !== undefined));
+    return this.asyncDispatchResult;
   }
 
   private dismissBrowserError(error: BrowserError): void {

@@ -444,7 +444,12 @@ function registerSessionDaemonRoutes({ eventHub, machineStatus, statusAttributio
   registerPairedPluginBackendRoutes(app, {
     projects,
     backends: pluginBackends,
-    onWorkspacesMutated: () => { statusAttribution.invalidate(); },
+    // A backend operation is opaque here and nearly all of them are reads (the
+    // terminal panel lists once a second per open tab), while every refill of
+    // the topology costs two git spawns per project. Worktrees created from a
+    // terminal are picked up on the attribution TTL instead, and workspace
+    // removal - the one mutation that must show up at once - still invalidates.
+    onWorkspacesMutated: () => undefined,
   });
   registerPluginBackendChannelRoutes(app, { projects, backends: pluginBackends });
   registerWorkspaceRemovalRoutes(app, {

@@ -136,6 +136,31 @@ describe("Terminal panel lifecycle", () => {
     expect(memory.latestTerminalId(runtime.selectionScope(context))).toBe("terminal-old");
   });
 
+  it("stops reloading a requested terminal the list never returns", async () => {
+    const panel = createTerminalPanel();
+    const memory = new InMemoryTerminalSelectionMemory();
+    const runtime = new TerminalBrowserRuntime(memory);
+    const request = vi.fn((operation: string): Promise<JsonValue> =>
+      Promise.resolve(operation === "terminal.list" ? [terminalInfo("terminal-live")] : []));
+    const context = terminalContext({
+      peer: terminalPeer(request),
+      // The stale context the loop was found in: the host rejects every write.
+      navigation: { ...terminalNavigation(), set: vi.fn(() => false) },
+    });
+    memory.rememberTerminal(runtime.selectionScope(context), "terminal-gone");
+    Reflect.set(panel, "context", context);
+    Reflect.set(panel, "runtime", runtime);
+    callPanelMethod(panel, "willUpdate");
+    Reflect.set(panel, "visible", true);
+
+    await callAsyncPanelMethod(panel, "loadTerminals");
+
+    expect(memory.latestTerminalId(runtime.selectionScope(context))).toBeUndefined();
+    expect(Reflect.get(panel, "shouldReloadForRequestedTerminal")).toBeTypeOf("function");
+    expect(callPanelMethod(panel, "shouldReloadForRequestedTerminal")).toBe(true);
+    expect(callPanelMethod(panel, "shouldReloadForRequestedTerminal")).toBe(false);
+  });
+
   it("canonicalizes a queryless remembered selection before later history pushes", () => {
     const panel = createTerminalPanel();
     const memory = new InMemoryTerminalSelectionMemory();

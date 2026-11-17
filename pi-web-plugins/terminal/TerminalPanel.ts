@@ -89,6 +89,13 @@ export class TerminalPanel extends LitElement {
   private requestedAutoStartRequest: string | undefined;
   private routedTerminalId: string | undefined;
   private requestedTerminalId: string | undefined;
+  /**
+   * The scope + requested terminal a reload was already spent on. A requested
+   * terminal the list no longer contains otherwise re-triggers the load on
+   * every update, which spins for as long as the host keeps rejecting the
+   * navigation write that would replace it.
+   */
+  private requestedTerminalReloadKey: string | undefined;
   private pendingTerminalNavigation: { context: WorkspacePanelContext; terminalId: string | undefined } | undefined;
   private commandRunPollTimer: number | undefined;
   private readonly softKeysDefaultEnvironmentMedia = createTerminalSoftKeysDefaultEnvironmentMedia();
@@ -165,6 +172,7 @@ export class TerminalPanel extends LitElement {
       this.observedWorkspaceScope = workspaceScope;
       this.loadedWorkspaceScope = undefined;
       this.consumedAutoStartRequest = undefined;
+      this.requestedTerminalReloadKey = undefined;
       this.requestedAutoStartRequest = requestedAutoStart;
       this.routedTerminalId = routedTerminalId;
       this.requestedTerminalId = requestedTerminalId;
@@ -258,6 +266,11 @@ export class TerminalPanel extends LitElement {
       }
       this.terminals = [...reconciledTerminals.values()];
       this.commandRuns = commandRuns;
+      // A requested terminal this list does not contain is gone; stop
+      // remembering it so the panel can fall back instead of asking forever.
+      if (this.requestedTerminalId !== undefined && !reconciledTerminals.has(this.requestedTerminalId)) {
+        runtime.forgetTerminal(this.requestedTerminalId);
+      }
       runtime.updateTerminals(context, this.terminals);
       if (navigationGeneration === this.terminalNavigationGeneration
         && this.pendingStartNavigationGeneration !== this.terminalNavigationGeneration) {
@@ -309,13 +322,19 @@ export class TerminalPanel extends LitElement {
   }
 
   private shouldReloadForRequestedTerminal(): boolean {
-    return this.visible
-      && this.observedWorkspaceScope !== undefined
-      && this.observedWorkspaceScope === this.loadedWorkspaceScope
-      && this.requestedTerminalId !== undefined
-      && !this.loading
-      && this.loadRetryTimer === undefined
-      && !this.terminals.some((terminal) => terminal.id === this.requestedTerminalId);
+    if (!this.visible
+      || this.observedWorkspaceScope === undefined
+      || this.observedWorkspaceScope !== this.loadedWorkspaceScope
+      || this.requestedTerminalId === undefined
+      || this.loading
+      || this.loadRetryTimer !== undefined
+      || this.terminals.some((terminal) => terminal.id === this.requestedTerminalId)) return false;
+    // One reload per requested terminal: the list does not have it, so asking
+    // again cannot produce it.
+    const key = JSON.stringify([this.observedWorkspaceScope, this.requestedTerminalId]);
+    if (this.requestedTerminalReloadKey === key) return false;
+    this.requestedTerminalReloadKey = key;
+    return true;
   }
 
   private scheduleWorkspaceLoadRetry(scope: string, generation: number, runtime: TerminalBrowserRuntime): void {
